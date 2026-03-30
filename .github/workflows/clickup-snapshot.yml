@@ -1,0 +1,41 @@
+name: ClickUp Snapshot
+
+on:
+  workflow_dispatch:
+    inputs:
+      include_closed:
+        description: 'Include closed/archived tasks'
+        required: false
+        default: 'true'
+        type: boolean
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    name: Pull full ClickUp workspace snapshot
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run snapshot
+        working-directory: scripts
+        env:
+          CLICKUP_TOKEN: ${{ secrets.CLICKUP_TOKEN }}
+          CLICKUP_WORKSPACE_ID: ${{ secrets.CLICKUP_WORKSPACE_ID }}
+          INCLUDE_CLOSED: ${{ inputs.include_closed }}
+        run: python clickup_snapshot.py
+
+      - name: Upload snapshot as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: clickup-snapshot-${{ github.run_id }}
+          path: scripts/snapshot_output/
+          retention-days: 30

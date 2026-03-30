@@ -1,0 +1,13 @@
+name            = "plane-integrations"
+main            = "src/index.js"
+compatibility_date = "2024-09-23"
+account_id      = "8303d11002766bf1cc36bf2f07ba6f20"
+
+[[d1_databases]]
+binding       = "DB"
+database_name = "clickup-events"
+database_id   = "c37aeb36-e16e-416b-b699-c910f6f8dc10"
+
+[vars]
+# CLICKUP_WEBHOOK_SECRET is set as an encrypted secret via wrangler secret
+# or GitHub Actions -- never committed here

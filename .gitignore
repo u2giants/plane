@@ -1,0 +1,20 @@
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.env
+venv/
+.venv/
+
+# Snapshot output (artifacts, not source)
+scripts/snapshot_output/
+
+# Node
+node_modules/
+.wrangler/
+dist/
+
+# OS
+.DS_Store
+Thumbs.db
