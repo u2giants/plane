@@ -25,8 +25,13 @@ jobs:
         run: wrangler deploy
 
       - name: Set CLICKUP_WEBHOOK_SECRET
-        if: ${{ secrets.CLICKUP_WEBHOOK_SECRET != '' }}
         working-directory: integrations/worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: echo "${{ secrets.CLICKUP_WEBHOOK_SECRET }}" | wrangler secret put CLICKUP_WEBHOOK_SECRET
+          WEBHOOK_SECRET: ${{ secrets.CLICKUP_WEBHOOK_SECRET }}
+        run: |
+          if [ -n "$WEBHOOK_SECRET" ]; then
+            echo "$WEBHOOK_SECRET" | wrangler secret put CLICKUP_WEBHOOK_SECRET
+          else
+            echo "CLICKUP_WEBHOOK_SECRET not set — skipping (will set after ClickUp webhook registration)"
+          fi
