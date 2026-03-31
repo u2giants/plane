@@ -1,7 +1,7 @@
 /**
  * plane-integrations Worker
- * Receives ClickUp webhooks, validates HMAC, writes to D1.
- * Will grow into the permanent integration hub for Plane ↔ external tools.
+ * Receives ClickUp webhooks, validates HMAC, writes enriched rows to D1.
+ * Also serves as the permanent integration hub for Plane ↔ external tools.
  */
 export default {
   async fetch(request, env) {
@@ -45,16 +45,66 @@ async function handleClickUpWebhook(request, env) {
     return new Response('Bad Request: invalid JSON', { status: 400 });
   }
 
-  const eventType   = payload.event                                     ?? 'unknown';
-  const taskId      = payload.task_id                                   ?? null;
-  const listId      = payload.history_items?.[0]?.data?.list_id        ?? null;
+  // ── Core fields ────────────────────────────────────────────────────────────
+  const eventType = payload.event ?? 'unknown';
+  const taskId    = payload.task_id ?? null;
+
+  // ── Extract from history_items[0] ─────────────────────────────────────────
+  const item      = Array.isArray(payload.history_items) ? payload.history_items[0] : null;
+  const user      = item?.user ?? null;
+  const userId    = user?.id   ? String(user.id) : null;
+  const userName  = user?.username ?? user?.email ?? null;
+  const fieldChanged = item?.field ?? null;
+
+  // from/to values depend on the field that changed
+  let fromValue = null;
+  let toValue   = null;
+
+  if (item) {
+    const data = item.data ?? {};
+    switch (fieldChanged) {
+      case 'status':
+        fromValue = item.before?.status ?? data.from?.status ?? null;
+        toValue   = item.after?.status  ?? data.to?.status   ?? null;
+        break;
+      case 'assignee':
+        fromValue = item.before ? JSON.stringify(item.before) : null;
+        toValue   = item.after  ? JSON.stringify(item.after)  : null;
+        break;
+      case 'priority':
+        fromValue = item.before?.priority?.priority ?? item.before?.priority ?? null;
+        toValue   = item.after?.priority?.priority  ?? item.after?.priority  ?? null;
+        break;
+      case 'due_date':
+        fromValue = item.before?.due_date ?? null;
+        toValue   = item.after?.due_date  ?? null;
+        break;
+      case 'tag':
+        fromValue = item.before ? JSON.stringify(item.before) : null;
+        toValue   = item.after  ? JSON.stringify(item.after)  : null;
+        break;
+      default:
+        // Generic: try before/after, then data.from/to
+        fromValue = item.before != null ? JSON.stringify(item.before) : (data.from != null ? JSON.stringify(data.from) : null);
+        toValue   = item.after  != null ? JSON.stringify(item.after)  : (data.to   != null ? JSON.stringify(data.to)   : null);
+    }
+  }
+
+  // space_id: try multiple locations in the payload
+  const listId    = item?.data?.list_id ?? payload.list_id ?? null;
+  const spaceId   = item?.data?.space_id ?? payload.space_id ?? null;
   const workspaceId = String(payload.webhook_id ?? '');
 
   try {
     await env.DB.prepare(
-      `INSERT INTO events (event_type, task_id, list_id, workspace_id, payload)
-       VALUES (?, ?, ?, ?, ?)`
-    ).bind(eventType, taskId, listId, workspaceId, body).run();
+      `INSERT INTO events
+         (event_type, task_id, list_id, workspace_id, payload,
+          user_id, user_name, field_changed, from_value, to_value, space_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(
+      eventType, taskId, listId, workspaceId, body,
+      userId, userName, fieldChanged, fromValue, toValue, spaceId
+    ).run();
   } catch (err) {
     console.error('D1 write error:', err.message);
     return new Response('Internal Server Error', { status: 500 });
