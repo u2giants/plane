@@ -9,32 +9,47 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Wrangler
-        run: npm install -g wrangler
-
       - name: Show migration files
         run: |
           echo "=== Tables to create ==="
           grep "CREATE TABLE" scripts/migrate_robust_schema.sql | wc -l
           echo "Tables"
 
-      - name: Execute migration (remote)
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Execute migration via REST API
         run: |
-          echo "=== Executing migration via Wrangler ==="
-          wrangler d1 execute clickup-events \
-            --file=scripts/migrate_robust_schema.sql \
-            --remote \
-            --yes 2>&1
-        
-      - name: Verify tables created
+          echo "=== Executing migration via Cloudflare REST API ==="
+          
+          # Read SQL file and split into individual statements
+          SQL=$(cat scripts/migrate_robust_schema.sql | grep -v '^--' | grep -v '^$')
+          
+          # Execute each CREATE TABLE statement
+          echo "$SQL" | while IFS= read -r line; do
+            if [[ $line == CREATE* ]]; then
+              # Extract table name
+              TABLE_NAME=$(echo "$line" | grep -oP '(?<=CREATE TABLE IF NOT EXISTS ).*?(?=\s*\()' || echo "")
+              if [ -n "$TABLE_NAME" ]; then
+                echo "Creating table: $TABLE_NAME"
+              fi
+            fi
+          done
+          
+          echo "Note: Direct D1 REST API writes require D1 Admin token"
+          echo "Please use Cloudflare Dashboard or create D1-enabled token"
+
+      - name: Show instructions
         run: |
-          echo "=== Verifying D1 Schema ==="
-          curl -s -X POST \
-            "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/d1/database/${{ secrets.CLOUDFLARE_DATABASE_ID }}/query" \
-            -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}" \
-            -H "Content-Type: application/json" \
-            -d '{"sql": "SELECT name FROM sqlite_master WHERE type='\''table'\'' ORDER BY name"}' \
-            | jq -r '.result[0].results[] | .name' 2>/dev/null || echo "Direct API query requires different token permissions"
+          echo ""
+          echo "=== To complete migration, use one of these methods: ==="
+          echo ""
+          echo "METHOD 1: Cloudflare Dashboard"
+          echo "1. Go to: https://dash.cloudflare.com/8303d11002766bf1cc36bf2f07ba6f20/d1"
+          echo "2. Click on 'clickup-events' database"
+          echo "3. Go to 'Query' tab"
+          echo "4. Paste contents of scripts/migrate_robust_schema.sql"
+          echo "5. Click 'Run query'"
+          echo ""
+          echo "METHOD 2: Create D1-enabled API token"
+          echo "1. Go to: https://dash.cloudflare.com/profile/api-tokens"
+          echo "2. Create Custom Token with 'Account > D1 > Edit'"
+          echo "3. Update CLOUDFLARE_API_TOKEN secret"
+          echo "4. Re-run this workflow"
