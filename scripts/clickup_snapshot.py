@@ -1,7 +1,6 @@
 """
-ClickUp full workspace snapshot — enriched version.
-Captures: spaces, folders, lists, tasks (with checklists + dependencies),
-members (via /seat), custom fields, goals, views, tags, time tracking, docs.
+ClickUp full workspace snapshot — optimized version.
+Features: parallel API calls, resume capability, compression.
 
 Run via GitHub Actions (workflows/clickup-snapshot.yml) or locally:
   CLICKUP_TOKEN=pk_xxx CLICKUP_WORKSPACE_ID=2298436 python clickup_snapshot.py
@@ -10,8 +9,12 @@ import os
 import json
 import time
 import sys
+import gzip
+import hashlib
 from datetime import datetime, timedelta
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
 
 import requests
 
@@ -23,13 +26,16 @@ HEADERS          = {"Authorization": TOKEN}
 OUT              = Path("snapshot_output")
 OUT.mkdir(exist_ok=True)
 RUN_TS           = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+MANIFEST_FILE    = OUT / "_manifest.json"
 
-# How many of the "most recently updated" tasks to pull full comments for
-# (avoids 11K+ individual API calls for the full task list)
+# Configuration
 COMMENT_SAMPLE_SIZE = 200
+MAX_WORKERS = 10  # Parallel API calls
+RETRY_DELAY = 2   # Seconds between retries
 
 
-def get(path, params=None, retries=3):
+def get(path, params=None, retries=3, retry_delay=RETRY_DELAY):
+    """Fetch with retries and exponential backoff."""
     url = f"{BASE}{path}"
     for attempt in range(retries):
         try:
@@ -40,28 +46,65 @@ def get(path, params=None, retries=3):
                 time.sleep(wait)
                 continue
             if r.status_code == 404:
-                return None   # endpoint not available on this plan tier
+                return None
             r.raise_for_status()
             return r.json()
         except requests.RequestException as e:
             if attempt == retries - 1:
                 print(f"  ERROR {url}: {e}", file=sys.stderr)
                 return None
-            time.sleep(2 ** attempt)
+            time.sleep(retry_delay * (2 ** attempt))  # Exponential backoff
     return None
 
 
-def save(name, data):
+def save(name, data, compress=True):
+    """Save JSON with optional gzip compression."""
     fname = OUT / f"{name}_{RUN_TS}.json"
-    with open(fname, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-    size = fname.stat().st_size
-    print(f"  ✓ {fname.name}  ({size:,} bytes)", flush=True)
-    return fname
+    fname_gz = fname.with_suffix('.json.gz')
+    
+    if compress:
+        with gzip.open(fname_gz, 'wt', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        size = fname_gz.stat().st_size
+        print(f"  ✓ {fname_gz.name}  ({size:,} bytes compressed)", flush=True)
+        return fname_gz
+    else:
+        with open(fname, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        size = fname.stat().st_size
+        print(f"  ✓ {fname.name}  ({size:,} bytes)", flush=True)
+        return fname
+
+
+def save_compressed(name, data):
+    """Alias for save with compression."""
+    return save(name, data, compress=True)
+
+
+def load_manifest():
+    """Load existing manifest for resume capability."""
+    if MANIFEST_FILE.exists():
+        with open(MANIFEST_FILE, 'r') as f:
+            return json.load(f)
+    return None
+
+
+def save_manifest(manifest):
+    """Save manifest for tracking progress."""
+    with open(MANIFEST_FILE, 'w') as f:
+        json.dump(manifest, f, indent=2)
+
+
+def mark_list_done(list_id, manifest):
+    """Mark a list as processed (for resume)."""
+    if 'completed_lists' not in manifest:
+        manifest['completed_lists'] = []
+    manifest['completed_lists'].append(list_id)
+    save_manifest(manifest)
 
 
 def get_tasks_paged(list_id, include_closed):
-    """Fetch all tasks from a list, handling pagination."""
+    """Fetch all tasks from a list with pagination."""
     tasks = []
     page = 0
     while True:
@@ -78,40 +121,46 @@ def get_tasks_paged(list_id, include_closed):
         if len(batch) < 100:
             break
         page += 1
-        time.sleep(0.3)
+        time.sleep(0.2)
     return tasks
 
 
-def process_list(lst, space_id, include_closed, all_tasks, all_linked, all_checklists, comment_candidates):
-    """Process a single list - fetches tasks and extracts related data."""
+def process_list_parallel(args):
+    """Process a single list - for parallel execution."""
+    lst, space_id, include_closed, = args
     lid, lname = lst["id"], lst["name"]
-    print(f"      List: {lname} — fetching tasks...", flush=True)
-    tasks = get_tasks_paged(lid, include_closed)
-    print(f"        {len(tasks)} tasks", flush=True)
     
-    all_tasks.extend(tasks)
-    all_linked.extend(extract_linked_tasks(tasks))
-    all_checklists.extend(extract_checklists(tasks))
-    comment_candidates.extend(tasks)
-    save(f"tasks_list_{lid}", {"list_name": lname, "list_id": lid, "space_id": space_id, "tasks": tasks})
+    try:
+        tasks = get_tasks_paged(lid, include_closed)
+        linked = extract_linked_tasks(tasks)
+        checklists = extract_checklists(tasks)
+        
+        return {
+            'list_id': lid,
+            'list_name': lname,
+            'space_id': space_id,
+            'tasks': tasks,
+            'linked': linked,
+            'checklists': checklists,
+            'success': True
+        }
+    except Exception as e:
+        print(f"  ✗ Failed list {lname}: {e}", flush=True)
+        return {'list_id': lid, 'success': False, 'error': str(e)}
 
 
 def extract_linked_tasks(tasks):
-    """Pull linked task relationships from task payloads.
-    
-    Note: ClickUp uses 'linked_tasks' not 'dependencies'.
-    Linked tasks show task relationships like 'blocks', 'blocked by', 'relates to'.
-    """
+    """Pull linked task relationships from task payloads."""
     linked = []
     for t in tasks:
         for link in t.get("linked_tasks", []):
             linked.append({
-                "task_id":       t["id"],
-                "task_name":     t.get("name", ""),
+                "task_id":        t["id"],
+                "task_name":      t.get("name", ""),
                 "linked_task_id": link.get("task_id", ""),
-                "link_id":       link.get("link_id", ""),
-                "date_created":  link.get("date_created", ""),
-                "user_id":       link.get("userid", ""),
+                "link_id":        link.get("link_id", ""),
+                "date_created":   link.get("date_created", ""),
+                "user_id":        link.get("userid", ""),
             })
     return linked
 
@@ -130,15 +179,32 @@ def extract_checklists(tasks):
 
 
 def main():
-    print(f"\n=== ClickUp Enriched Snapshot  workspace={WORKSPACE}  ts={RUN_TS} ===\n", flush=True)
+    print(f"\n=== ClickUp Optimized Snapshot  workspace={WORKSPACE}  ts={RUN_TS} ===\n", flush=True)
+    print(f"Parallel workers: {MAX_WORKERS}", flush=True)
 
-    # ── Workspace ──────────────────────────────────────────────────────────────
+    # Check for resume
+    manifest = load_manifest()
+    if manifest:
+        print(f"Resuming from previous run ({len(manifest.get('completed_lists', []))} lists done)", flush=True)
+    else:
+        manifest = {
+            "snapshot_ts": RUN_TS,
+            "workspace_id": WORKSPACE,
+            "include_closed": INCLUDE_CLOSED,
+            "comment_sample": COMMENT_SAMPLE_SIZE,
+            "completed_lists": [],
+            "files": []
+        }
+
+    # Fetch workspace
     print("Fetching workspaces...", flush=True)
     teams_data = get("/team")
     if not teams_data:
         sys.exit("Could not fetch workspaces — check CLICKUP_TOKEN")
     teams = teams_data.get("teams", [])
-    save("workspaces", teams)
+    
+    # Save manifest first (for resume on crash)
+    save_manifest(manifest)
 
     for team in teams:
         tid = team["id"]
@@ -147,64 +213,57 @@ def main():
 
         print(f"\n→ Workspace: {team['name']} ({tid})", flush=True)
 
-        # ── Members via /seat (replaces broken /member endpoint) ──────────────
-        print("  Members (via /seat)...", flush=True)
-        seats = get(f"/team/{tid}/seat")
-        save(f"members_seats_{tid}", seats)
+        # Fetch all static data (sequential - small payloads)
+        print("  Fetching workspace data...", flush=True)
+        
+        # Members, fields, goals, views, time, docs (parallelize small requests)
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            futures = {
+                executor.submit(get, f"/team/{tid}/seat"): "members",
+                executor.submit(get, f"/team/{tid}/field"): "fields",
+                executor.submit(get, f"/team/{tid}/goal"): "goals",
+                executor.submit(get, f"/team/{tid}/view"): "views",
+                executor.submit(get, f"/team/{tid}/page"): "docs",
+            }
+            
+            now_ms   = int(datetime.utcnow().timestamp() * 1000)
+            start_ms = int((datetime.utcnow() - timedelta(days=90)).timestamp() * 1000)
+            futures[executor.submit(get, f"/team/{tid}/time_entries", 
+                          params={"start_date": start_ms, "end_date": now_ms})] = "time"
+            
+            for future in as_completed(futures):
+                name = futures[future]
+                try:
+                    data = future.result()
+                    if name == "members": save_compressed(f"members_seats_{tid}", data)
+                    elif name == "fields": save_compressed(f"custom_fields_{tid}", data)
+                    elif name == "goals": save_compressed(f"goals_{tid}", data)
+                    elif name == "views": save_compressed(f"views_workspace_{tid}", data)
+                    elif name == "time": save_compressed(f"time_tracking_{tid}", data)
+                    elif name == "docs": 
+                        if data: save_compressed(f"docs_{tid}", data)
+                        else: print("    (docs not available on this plan tier)")
+                except Exception as e:
+                    print(f"  ✗ Failed {name}: {e}", flush=True)
 
-        # ── Custom fields ──────────────────────────────────────────────────────
-        print("  Custom fields...", flush=True)
-        fields = get(f"/team/{tid}/field")
-        save(f"custom_fields_{tid}", fields)
-
-        # ── Goals ──────────────────────────────────────────────────────────────
-        print("  Goals...", flush=True)
-        goals = get(f"/team/{tid}/goal")
-        save(f"goals_{tid}", goals)
-
-        # ── Workspace-level views ──────────────────────────────────────────────
-        print("  Workspace views...", flush=True)
-        views = get(f"/team/{tid}/view")
-        save(f"views_workspace_{tid}", views)
-
-        # ── Time tracking (last 90 days) ───────────────────────────────────────
-        print("  Time tracking (last 90 days)...", flush=True)
-        now_ms     = int(datetime.utcnow().timestamp() * 1000)
-        start_ms   = int((datetime.utcnow() - timedelta(days=90)).timestamp() * 1000)
-        time_data  = get(f"/team/{tid}/time_entries", params={"start_date": start_ms, "end_date": now_ms})
-        save(f"time_tracking_{tid}", time_data)
-
-        # ── Docs / Pages (may 404 on lower plan tiers) ────────────────────────
-        print("  Docs/Pages (attempting)...", flush=True)
-        docs = get(f"/team/{tid}/page")
-        if docs is not None:
-            save(f"docs_{tid}", docs)
-        else:
-            print("    (not available on this plan tier)", flush=True)
-
-        # ── Spaces ────────────────────────────────────────────────────────────
+        # Fetch spaces
         print("  Spaces...", flush=True)
         spaces_data = get(f"/team/{tid}/space", params={"archived": "false"})
         spaces = spaces_data.get("spaces", []) if spaces_data else []
-        save(f"spaces_{tid}", spaces)
+        save_compressed(f"spaces_{tid}", spaces)
 
-        all_tasks       = []
-        all_linked      = []
-        all_checklists  = []
-        comment_candidates = []   # recently updated tasks to sample comments from
-
+        # Collect all lists to process
+        all_lists_to_process = []
+        completed_lists = set(manifest.get('completed_lists', []))
+        
         for space in spaces:
             sid = space["id"]
             print(f"\n  Space: {space['name']} ({sid})", flush=True)
 
-            # Tags per space
-            tags = get(f"/space/{sid}/tag")
-            if tags:
-                save(f"tags_space_{sid}", tags)
-
-            # Space views
-            sv = get(f"/space/{sid}/view")
-            save(f"views_space_{sid}", sv)
+            # Tags and views (parallel)
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                executor.submit(lambda s: save_compressed(f"tags_space_{s}", get(f"/space/{s}/tag")), sid)
+                executor.submit(lambda s: save_compressed(f"views_space_{s}", get(f"/space/{s}/view")), sid)
 
             # Folders
             folders_data = get(f"/space/{sid}/folder", params={"archived": "false"})
@@ -214,22 +273,61 @@ def main():
             for folder in folders:
                 lists_data = get(f"/folder/{folder['id']}/list", params={"archived": "false"})
                 for lst in lists_data.get("lists", []) if lists_data else []:
-                    process_list(lst, sid, INCLUDE_CLOSED, all_tasks, all_linked, all_checklists, comment_candidates)
+                    if lst["id"] not in completed_lists:
+                        all_lists_to_process.append((lst, sid, INCLUDE_CLOSED))
 
             # Folderless lists
             flists_data = get(f"/space/{sid}/list", params={"archived": "false"})
             for lst in flists_data.get("lists", []) if flists_data else []:
-                print(f"    List (no folder): {lst['name']}", flush=True)
-                process_list(lst, sid, INCLUDE_CLOSED, all_tasks, all_linked, all_checklists, comment_candidates)
+                if lst["id"] not in completed_lists:
+                    all_lists_to_process.append((lst, sid, INCLUDE_CLOSED))
 
-        # ── Save aggregated data ───────────────────────────────────────────────
-        save(f"ALL_tasks_{tid}", all_tasks)
-        save(f"ALL_linked_tasks_{tid}", all_linked)
-        save(f"ALL_checklists_{tid}", all_checklists)
+        # Process lists in parallel
+        print(f"\n  Processing {len(all_lists_to_process)} lists with {MAX_WORKERS} workers...", flush=True)
+        
+        all_tasks = []
+        all_linked = []
+        all_checklists = []
+        comment_candidates = []
+        
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            futures = {executor.submit(process_list_parallel, args): args for args in all_lists_to_process}
+            
+            for i, future in enumerate(as_completed(futures)):
+                args = futures[future]
+                lst = args[0]
+                result = future.result()
+                
+                if result['success']:
+                    all_tasks.extend(result['tasks'])
+                    all_linked.extend(result['linked'])
+                    all_checklists.extend(result['checklists'])
+                    comment_candidates.extend(result['tasks'])
+                    
+                    # Save individual list (compressed)
+                    save_compressed(f"tasks_list_{result['list_id']}", {
+                        "list_name": result['list_name'],
+                        "list_id": result['list_id'],
+                        "space_id": result['space_id'],
+                        "tasks": result['tasks']
+                    })
+                    
+                    # Mark done for resume
+                    mark_list_done(result['list_id'], manifest)
+                    
+                    if (i + 1) % 50 == 0:
+                        print(f"    {i+1}/{len(all_lists_to_process)} lists done...", flush=True)
+                else:
+                    print(f"    ✗ List {lst['name']} failed: {result.get('error')}", flush=True)
 
-        # ── Comments sample (top N most recently updated tasks) ───────────────
+        # Save aggregated data
+        print("\n  Saving aggregated data...", flush=True)
+        save_compressed(f"ALL_tasks_{tid}", all_tasks)
+        save_compressed(f"ALL_linked_tasks_{tid}", all_linked)
+        save_compressed(f"ALL_checklists_{tid}", all_checklists)
+
+        # Comments sample (parallel)
         print(f"\n  Sampling comments for {COMMENT_SAMPLE_SIZE} most-recently-updated tasks...", flush=True)
-        # Sort by date_updated descending, take top N
         sorted_tasks = sorted(
             [t for t in comment_candidates if t.get("date_updated")],
             key=lambda t: int(t.get("date_updated", 0)),
@@ -237,32 +335,35 @@ def main():
         )[:COMMENT_SAMPLE_SIZE]
 
         comments_sample = []
-        for i, t in enumerate(sorted_tasks):
+        def fetch_comments(t):
             cdata = get(f"/task/{t['id']}/comment")
             if cdata and cdata.get("comments"):
-                comments_sample.append({
+                return {
                     "task_id":   t["id"],
                     "task_name": t.get("name", ""),
                     "comments":  cdata["comments"],
-                })
-            if (i + 1) % 25 == 0:
-                print(f"    {i+1}/{len(sorted_tasks)} done...", flush=True)
-            time.sleep(0.2)
+                }
+            return None
 
-        save(f"comments_sample_{tid}", comments_sample)
-        print(f"  Comments captured: {sum(len(c['comments']) for c in comments_sample)} from {len(comments_sample)} tasks", flush=True)
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = {executor.submit(fetch_comments, t): t for t in sorted_tasks}
+            for i, future in enumerate(as_completed(futures)):
+                result = future.result()
+                if result:
+                    comments_sample.append(result)
+                if (i + 1) % 25 == 0:
+                    print(f"    {i+1}/{len(sorted_tasks)} comments done...", flush=True)
 
-        print(f"\n  Totals: {len(all_tasks)} tasks | {len(all_linked)} linked tasks | {len(all_checklists)} checklists", flush=True)
+        save_compressed(f"comments_sample_{tid}", comments_sample)
+        print(f"  Comments: {sum(len(c['comments']) for c in comments_sample)} from {len(comments_sample)} tasks", flush=True)
 
-    # ── Manifest ──────────────────────────────────────────────────────────────
-    manifest = {
-        "snapshot_ts":      RUN_TS,
-        "workspace_id":     WORKSPACE,
-        "include_closed":   INCLUDE_CLOSED,
-        "comment_sample":   COMMENT_SAMPLE_SIZE,
-        "files":            [f.name for f in sorted(OUT.iterdir())],
-    }
-    save("_manifest", manifest)
+        print(f"\n  Totals: {len(all_tasks)} tasks | {len(all_linked)} linked | {len(all_checklists)} checklists", flush=True)
+
+    # Final manifest
+    manifest['files'] = [f.name for f in sorted(OUT.iterdir())]
+    manifest['completed'] = True
+    save_manifest(manifest)
+    
     print(f"\n=== Snapshot complete — {len(manifest['files'])} files ===\n", flush=True)
 
 
