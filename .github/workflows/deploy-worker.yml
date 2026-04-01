@@ -35,3 +35,30 @@ jobs:
           else
             echo "CLICKUP_WEBHOOK_SECRET not set — skipping (will set after ClickUp webhook registration)"
           fi
+
+      - name: Health Check
+        run: |
+          sleep 3
+          curl -s https://plane-integrations.u2giants.workers.dev/health | grep -q "ok" && echo "✓ Worker healthy" || exit 1
+
+      - name: Notify on Failure
+        if: failure()
+        uses: slackapi/slack-github-action@v1.25.0
+        with:
+          channel-id: 'YOUR_CHANNEL_ID'
+          payload: |
+            {
+              "text": "🚨 Worker deployment FAILED",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Deployment Failed*\nRun: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        continue-on-error: true

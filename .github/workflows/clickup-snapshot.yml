@@ -13,6 +13,7 @@ jobs:
   snapshot:
     runs-on: ubuntu-latest
     name: Pull full ClickUp workspace snapshot
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
@@ -39,3 +40,25 @@ jobs:
           name: clickup-snapshot-${{ github.run_id }}
           path: scripts/snapshot_output/
           retention-days: 30
+
+      - name: Notify on Failure
+        if: failure()
+        uses: slackapi/slack-github-action@v1.25.0
+        with:
+          channel-id: 'YOUR_CHANNEL_ID'
+          payload: |
+            {
+              "text": "🚨 ClickUp Snapshot FAILED",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Snapshot Failed*\nRun: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        continue-on-error: true
