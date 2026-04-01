@@ -572,17 +572,54 @@ The `CLICKUP_WEBHOOK_SECRET` also needs to be set as a Cloudflare Worker secret.
 
 ## Current Status
 
-| Item | Status |
-|------|--------|
-| GitHub repo (`u2giants/plane`) | ✅ Live |
-| Cloudflare Worker | ✅ Live — `plane-integrations.u2giants.workers.dev` |
-| Worker bugs | ✅ **FIXED** — list_id, workspace_id, HMAC security |
-| D1 schema (legacy) | ✅ Live — events table |
-| D1 schema (robust) | ✅ **CREATED** — 15 new tables + views |
-| D1 migration | ✅ **COMPLETED** via GitHub Actions |
-| ClickUp webhook | ✅ **CONFIGURED** — pointing to Worker with HMAC validation |
-| list_space_map | ✅ **POPULATED** — 21 lists mapped to 3 spaces |
-| Initial snapshot (Mar 30) | ✅ Complete — 17,746 tasks |
-| Enriched snapshot (Mar 31) | ✅ Complete — members, time, tags, checklists, deps, comments |
-| `/worksp/plane/` on Coolify | ✅ Ready — empty, for build phase |
-| Build phase (Plane on Coolify) | ⏳ Not started — begins after final analysis |
+### ✅ What's Done (Apr 1, 2026)
+
+- ✅ Robust D1 schema: 15 tables + 4 analysis views with 25+ indexes
+- ✅ Worker deployed with HMAC validation + custom field update parsing
+- ✅ list_space_map populated: POP Creations, Spruce Line, designflow (21 lists)
+- ✅ Full workspace snapshot: 17,751 tasks, 495 linked tasks, 7,184 checklists
+- ✅ Webhook capturing: status, assignee, priority, due date, tag, and custom field changes
+
+### ⏳ What's Next
+
+| Phase | What | When |
+|-------|------|------|
+| **Learning** | 14-day observation window | Now → Apr 14 |
+| **Checkpoint 1** | Mid-point analysis (7 days) | ~Apr 7 |
+| **Checkpoint 2** | Final analysis + Plane roadmap | ~Apr 14 |
+| **Build** | Deploy Plane on Coolify, customize | After Apr 14 |
+
+### 🔗 Monitoring URLs
+
+- **GitHub Actions:** https://github.com/u2giants/plane/actions
+- **Worker logs:** https://dash.cloudflare.com/8303d11002766bf1cc36bf2f07ba6f20/workers/services/view/plane-integrations/production/logs
+- **Snapshot artifacts:** https://github.com/u2giants/plane/actions/runs/23873776551/artifacts
+- **Health check:** `curl https://plane-integrations.u2giants.workers.dev/health`
+
+### 🔍 Quick Query Commands
+
+```bash
+# Total events (exclude test)
+curl -s -X POST "https://api.cloudflare.com/client/v4/accounts/8303d11002766bf1cc36bf2f07ba6f20/d1/database/c37aeb36-e16e-416b-b699-c910f6f8dc10/query" \
+  -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"sql": "SELECT COUNT(*) as total FROM events WHERE event_type != '\''test'\''"}'
+
+# Events by division (requires list_space_map)
+curl -s -X POST "https://api.cloudflare.com/client/v4/accounts/8303d11002766bf1cc36bf2f07ba6f20/d1/database/c37aeb36-e16e-416b-b699-c910f6f8dc10/query" \
+  -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"sql": "SELECT m.space_name, COUNT(*) as events FROM events e LEFT JOIN list_space_map m ON e.list_id = m.list_id WHERE e.event_type != '\''test'\'' GROUP BY m.space_name"}'
+```
+
+| Component | Status | Last Updated |
+|-----------|--------|--------------|
+| GitHub repo | ✅ Live | — |
+| Cloudflare Worker | ✅ Live + Custom field parsing | Apr 1, 2026 |
+| D1 Schema (robust) | ✅ 15 tables + views created | Apr 1, 2026 |
+| D1 Migration | ✅ Completed via GitHub Actions | Apr 1, 2026 |
+| ClickUp Webhook | ✅ Live — 22 event types | — |
+| list_space_map | ✅ POPULATED — 21 lists → 3 spaces | Apr 1, 2026 |
+| ClickUp Snapshot | ✅ 17,751 tasks captured | Apr 1, 2026 |
+| Coolify `/worksp/plane/` | ✅ Ready (empty) | — |
+| Build Phase | ⏳ Waiting — starts after final analysis | — |
