@@ -90,10 +90,15 @@ async function handleClickUpWebhook(request, env) {
     }
   }
 
-  // space_id: try multiple locations in the payload
-  const listId    = item?.data?.list_id ?? payload.list_id ?? null;
+  // list_id: ClickUp puts this in history_items[0].parent_id (not item.data.list_id which doesn't exist)
+  const listId    = item?.parent_id ?? item?.data?.subcategory_id ?? payload.list_id ?? null;
+  
+  // space_id: ClickUp webhooks don't include this directly - must derive from list_id via list_space_map
+  // Try common locations, but primary fix is via JOIN on list_space_map
   const spaceId   = item?.data?.space_id ?? payload.space_id ?? null;
-  const workspaceId = String(payload.webhook_id ?? '');
+  
+  // workspace_id: should be team_id, not webhook_id (which is the registration UUID)
+  const workspaceId = payload.team_id ? String(payload.team_id) : null;
 
   try {
     await env.DB.prepare(
