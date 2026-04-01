@@ -23,8 +23,6 @@ jobs:
                 "taskCommentPosted", "taskCommentUpdated", "taskAssigneeUpdated",
                 "taskStatusUpdated", "taskTimeEstimateUpdated", "taskTimeTrackedUpdated",
                 "taskPriorityUpdated", "taskDueDateUpdated", "taskTagUpdated",
-                "taskAttachmentUpdated", "taskChecklistItemCompleted",
-                "taskChecklistItemDeleted", "taskLinkedTasksUpdated",
                 "listCreated", "listUpdated", "listDeleted",
                 "folderCreated", "folderUpdated", "folderDeleted",
                 "spaceCreated", "spaceUpdated", "spaceDeleted"
