@@ -586,3 +586,5 @@ The `CLICKUP_WEBHOOK_SECRET` also needs to be set as a Cloudflare Worker secret.
 | Enriched snapshot (Mar 31) | ✅ Complete — members, time, tags, checklists, deps, comments |
 | `/worksp/plane/` on Coolify | ✅ Ready — empty, for build phase |
 | Build phase (Plane on Coolify) | ⏳ Not started — begins after final analysis |
+
+[Webhook secret updated $(date)](about:blank)
