@@ -1,15 +1,13 @@
 """
-One-time script: reads all snapshot task files, extracts list→folder→space
-mappings, and prints SQL INSERT statements for D1.
-
-Run:  python scripts/populate_list_space_map.py
-Then copy the INSERT block into wrangler d1 execute or Cloudflare MCP.
+Populate list_space_map table from snapshot data.
+Run: python scripts/populate_list_space_map.py
+Then copy the SQL output to execute against D1.
 """
 import json
 import sys
 from pathlib import Path
 
-SNAPSHOT_DIR = Path(__file__).parent / "snapshot_output"
+SNAPSHOT_DIR = Path(".")
 
 SPACE_NAMES = {
     "2571984":      "Spruce Line",
@@ -17,12 +15,18 @@ SPACE_NAMES = {
     "90114122073":  "designflow",
 }
 
+def esc(v):
+    """Escape SQL string values."""
+    if v is None:
+        return "NULL"
+    return "'" + str(v).replace("'", "''") + "'"
+
 def main():
     mappings = {}  # list_id → dict
 
-    for f in sorted(SNAPSHOT_DIR.glob("tasks_list_*.json")):
+    for f in sorted(SNAPSHOT_DIR.glob("tasks_list_*_20260331_023108.json")):
         try:
-            data = json.loads(f.read_text(encoding="utf-8"))
+            data = json.loads(f.read_text(encoding="utf-8", errors="replace"))
         except Exception as e:
             print(f"  skip {f.name}: {e}", file=sys.stderr)
             continue
@@ -58,7 +62,7 @@ def main():
         }
 
     if not mappings:
-        sys.exit("No mappings found — check snapshot_output directory")
+        sys.exit("No mappings found - check snapshot_output directory")
 
     # Print summary
     print(f"Found {len(mappings)} lists:\n")
@@ -69,24 +73,31 @@ def main():
 
     # Print SQL
     print("\n--- SQL for D1 ---\n")
+    
+    # Build VALUES rows correctly
     rows = []
     for m in mappings.values():
-        def esc(v):
-            if v is None:
-                return "NULL"
-            return "'" + str(v).replace("'", "''") + "'"
-
         rows.append(
-            f"({esc(m['list_id'])},{esc(m['list_name'])},{esc(m['space_id'])},{esc(m['space_name'])},{esc(m['folder_id'])},{esc(m['folder_name'])})"
+            f"({esc(m['list_id'])}, {esc(m['list_name'])}, {esc(m['space_id'])}, {esc(m['space_name'])}, {esc(m['folder_id'])}, {esc(m['folder_name'])})"
         )
-
+    
     sql = (
-        "INSERT OR REPLACE INTO list_space_map\n"
-        "  (list_id, list_name, space_id, space_name, folder_id, folder_name)\nVALUES\n  "
-        + ",\n  ".join(rows)
+        "DELETE FROM list_space_map;\n\n"
+        "INSERT INTO list_space_map\n"
+        "  (list_id, list_name, space_id, space_name, folder_id, folder_name)\n"
+        "VALUES\n"
+        + ",\n".join(rows)
         + ";"
     )
     print(sql)
+    
+    # Save to file for easy access
+    output_file = SNAPSHOT_DIR / "list_space_map.sql"
+    with open(output_file, "w", encoding="utf-8") as f:
+        f.write("-- Populate list_space_map from snapshot\n")
+        f.write("-- Run this SQL against D1 to enable division-level analysis\n\n")
+        f.write(sql)
+    print(f"\nSQL saved to: {output_file}")
 
 if __name__ == "__main__":
     main()

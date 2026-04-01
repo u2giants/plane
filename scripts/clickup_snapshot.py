@@ -81,18 +81,24 @@ def get_tasks_paged(list_id, include_closed):
     return tasks
 
 
-def extract_dependencies(tasks):
-    """Pull the dependency graph from task payloads — no extra API calls needed."""
-    graph = []
+def extract_linked_tasks(tasks):
+    """Pull linked task relationships from task payloads.
+    
+    Note: ClickUp uses 'linked_tasks' not 'dependencies'.
+    Linked tasks show task relationships like 'blocks', 'blocked by', 'relates to'.
+    """
+    linked = []
     for t in tasks:
-        for dep in t.get("dependencies", []):
-            graph.append({
-                "task_id":      t["id"],
-                "task_name":    t.get("name", ""),
-                "depends_on":   dep.get("task_id") or dep.get("depends_on", ""),
-                "type":         dep.get("type", ""),
+        for link in t.get("linked_tasks", []):
+            linked.append({
+                "task_id":       t["id"],
+                "task_name":     t.get("name", ""),
+                "linked_task_id": link.get("task_id", ""),
+                "link_id":       link.get("link_id", ""),
+                "date_created":  link.get("date_created", ""),
+                "user_id":       link.get("userid", ""),
             })
-    return graph
+    return linked
 
 
 def extract_checklists(tasks):
@@ -167,9 +173,9 @@ def main():
         spaces = spaces_data.get("spaces", []) if spaces_data else []
         save(f"spaces_{tid}", spaces)
 
-        all_tasks      = []
-        all_deps       = []
-        all_checklists = []
+        all_tasks       = []
+        all_linked      = []
+        all_checklists  = []
         comment_candidates = []   # recently updated tasks to sample comments from
 
         for space in spaces:
@@ -201,7 +207,7 @@ def main():
                     tasks = get_tasks_paged(lid, INCLUDE_CLOSED)
                     print(f"        {len(tasks)} tasks", flush=True)
                     all_tasks.extend(tasks)
-                    all_deps.extend(extract_dependencies(tasks))
+                    all_linked.extend(extract_linked_tasks(tasks))
                     all_checklists.extend(extract_checklists(tasks))
                     comment_candidates.extend(tasks)
                     save(f"tasks_list_{lid}", {"list_name": lname, "list_id": lid, "space_id": sid, "tasks": tasks})
@@ -215,14 +221,14 @@ def main():
                 tasks = get_tasks_paged(lid, INCLUDE_CLOSED)
                 print(f"      {len(tasks)} tasks", flush=True)
                 all_tasks.extend(tasks)
-                all_deps.extend(extract_dependencies(tasks))
+                all_linked.extend(extract_linked_tasks(tasks))
                 all_checklists.extend(extract_checklists(tasks))
                 comment_candidates.extend(tasks)
                 save(f"tasks_list_{lid}", {"list_name": lname, "list_id": lid, "space_id": sid, "tasks": tasks})
 
         # ── Save aggregated data ───────────────────────────────────────────────
         save(f"ALL_tasks_{tid}", all_tasks)
-        save(f"ALL_dependencies_{tid}", all_deps)
+        save(f"ALL_linked_tasks_{tid}", all_linked)
         save(f"ALL_checklists_{tid}", all_checklists)
 
         # ── Comments sample (top N most recently updated tasks) ───────────────
@@ -250,7 +256,7 @@ def main():
         save(f"comments_sample_{tid}", comments_sample)
         print(f"  Comments captured: {sum(len(c['comments']) for c in comments_sample)} from {len(comments_sample)} tasks", flush=True)
 
-        print(f"\n  Totals: {len(all_tasks)} tasks | {len(all_deps)} dependencies | {len(all_checklists)} checklists", flush=True)
+        print(f"\n  Totals: {len(all_tasks)} tasks | {len(all_linked)} linked tasks | {len(all_checklists)} checklists", flush=True)
 
     # ── Manifest ──────────────────────────────────────────────────────────────
     manifest = {
