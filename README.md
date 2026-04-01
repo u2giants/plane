@@ -581,7 +581,7 @@ The `CLICKUP_WEBHOOK_SECRET` also needs to be set as a Cloudflare Worker secret.
 | D1 schema (robust) | ✅ **CREATED** — 15 new tables + views |
 | D1 migration | ✅ **COMPLETED** via GitHub Actions |
 | ClickUp webhook | ✅ **CONFIGURED** — pointing to Worker with HMAC validation |
-| list_space_map | ⚠️ **NEEDS POPULATION** — SQL ready in scripts/ |
+| list_space_map | ✅ **POPULATED** — 21 lists mapped to 3 spaces |
 | Initial snapshot (Mar 30) | ✅ Complete — 17,746 tasks |
 | Enriched snapshot (Mar 31) | ✅ Complete — members, time, tags, checklists, deps, comments |
 | `/worksp/plane/` on Coolify | ✅ Ready — empty, for build phase |
