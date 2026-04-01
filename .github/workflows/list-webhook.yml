@@ -1,0 +1,20 @@
+name: List ClickUp Webhooks
+
+on:
+  workflow_dispatch:
+
+jobs:
+  list-webhooks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: List webhooks
+        run: |
+          echo "Fetching ClickUp webhooks..."
+          
+          RESPONSE=$(curl -s -X GET \
+            "https://api.clickup.com/api/v2/team/${{ secrets.CLICKUP_WORKSPACE_ID }}/webhook" \
+            -H "Authorization: ${{ secrets.CLICKUP_TOKEN }}" \
+            -H "Content-Type: application/json")
+          
+          echo "Response:"
+          echo "$RESPONSE" | python3 -m json.tool
