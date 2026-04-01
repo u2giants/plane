@@ -22,20 +22,33 @@ export default {
 };
 
 async function handleClickUpWebhook(request, env) {
-  const body = await request.text();
+  // ── Security: Require HMAC if secret is configured ──────────────────────────
+  if (!env.CLICKUP_WEBHOOK_SECRET) {
+    console.error('FATAL: CLICKUP_WEBHOOK_SECRET not configured - rejecting all requests');
+    return new Response('Service Misconfigured', { status: 500 });
+  }
 
-  // Validate HMAC-SHA256 signature sent by ClickUp
-  if (env.CLICKUP_WEBHOOK_SECRET) {
-    const signature = request.headers.get('X-Signature');
-    if (!signature) {
-      console.warn('Missing X-Signature header');
-      return new Response('Unauthorized', { status: 401 });
-    }
-    const valid = await verifyHmac(body, signature, env.CLICKUP_WEBHOOK_SECRET);
-    if (!valid) {
-      console.warn('Invalid HMAC signature');
-      return new Response('Unauthorized', { status: 401 });
-    }
+  const signature = request.headers.get('X-Signature');
+  if (!signature) {
+    console.warn('Missing X-Signature header');
+    return new Response('Unauthorized', { status: 401 });
+  }
+
+  // ── Reject oversized payloads (prevent DoS) ─────────────────────────────────
+  const contentLength = request.headers.get('Content-Length');
+  const MAX_SIZE = 1 * 1024 * 1024; // 1MB limit
+  if (contentLength && parseInt(contentLength) > MAX_SIZE) {
+    console.warn(`Payload too large: ${contentLength} bytes`);
+    return new Response('Payload Too Large', { status: 413 });
+  }
+
+  const body = await request.text();
+  
+  // ── Validate HMAC-SHA256 signature ──────────────────────────────────────────
+  const valid = await verifyHmac(body, signature, env.CLICKUP_WEBHOOK_SECRET);
+  if (!valid) {
+    console.warn('Invalid HMAC signature');
+    return new Response('Unauthorized', { status: 401 });
   }
 
   let payload;
@@ -50,10 +63,10 @@ async function handleClickUpWebhook(request, env) {
   const taskId    = payload.task_id ?? null;
 
   // ── Extract from history_items[0] ─────────────────────────────────────────
-  const item      = Array.isArray(payload.history_items) ? payload.history_items[0] : null;
-  const user      = item?.user ?? null;
-  const userId    = user?.id   ? String(user.id) : null;
-  const userName  = user?.username ?? user?.email ?? null;
+  const item        = Array.isArray(payload.history_items) ? payload.history_items[0] : null;
+  const user        = item?.user ?? null;
+  const userId      = user?.id ? String(user.id) : null;
+  const userName    = user?.username ?? user?.email ?? null;
   const fieldChanged = item?.field ?? null;
 
   // from/to values depend on the field that changed
@@ -84,24 +97,20 @@ async function handleClickUpWebhook(request, env) {
         toValue   = item.after  ? JSON.stringify(item.after)  : null;
         break;
       default:
-        // Generic: try before/after, then data.from/to
         fromValue = item.before != null ? JSON.stringify(item.before) : (data.from != null ? JSON.stringify(data.from) : null);
         toValue   = item.after  != null ? JSON.stringify(item.after)  : (data.to   != null ? JSON.stringify(data.to)   : null);
     }
   }
 
-  // list_id: ClickUp puts this in history_items[0].parent_id (not item.data.list_id which doesn't exist)
+  // list_id: ClickUp puts this in history_items[0].parent_id
   const listId    = item?.parent_id ?? item?.data?.subcategory_id ?? payload.list_id ?? null;
-  
-  // space_id: ClickUp webhooks don't include this directly - must derive from list_id via list_space_map
-  // Try common locations, but primary fix is via JOIN on list_space_map
+  // space_id: must derive from list_id via list_space_map JOIN
   const spaceId   = item?.data?.space_id ?? payload.space_id ?? null;
-  
-  // workspace_id: should be team_id, not webhook_id (which is the registration UUID)
+  // workspace_id: should be team_id
   const workspaceId = payload.team_id ? String(payload.team_id) : null;
 
   try {
-    await env.DB.prepare(
+    const result = await env.DB.prepare(
       `INSERT INTO events
          (event_type, task_id, list_id, workspace_id, payload,
           user_id, user_name, field_changed, from_value, to_value, space_id)
@@ -110,6 +119,8 @@ async function handleClickUpWebhook(request, env) {
       eventType, taskId, listId, workspaceId, body,
       userId, userName, fieldChanged, fromValue, toValue, spaceId
     ).run();
+    
+    console.log(`D1 write success: event=${eventType} task=${taskId} meta=${JSON.stringify({listId, workspaceId, fieldChanged})}`);
   } catch (err) {
     console.error('D1 write error:', err.message);
     return new Response('Internal Server Error', { status: 500 });

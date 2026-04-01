@@ -61,6 +61,7 @@ def save(name, data):
 
 
 def get_tasks_paged(list_id, include_closed):
+    """Fetch all tasks from a list, handling pagination."""
     tasks = []
     page = 0
     while True:
@@ -79,6 +80,20 @@ def get_tasks_paged(list_id, include_closed):
         page += 1
         time.sleep(0.3)
     return tasks
+
+
+def process_list(lst, space_id, include_closed, all_tasks, all_linked, all_checklists, comment_candidates):
+    """Process a single list - fetches tasks and extracts related data."""
+    lid, lname = lst["id"], lst["name"]
+    print(f"      List: {lname} — fetching tasks...", flush=True)
+    tasks = get_tasks_paged(lid, include_closed)
+    print(f"        {len(tasks)} tasks", flush=True)
+    
+    all_tasks.extend(tasks)
+    all_linked.extend(extract_linked_tasks(tasks))
+    all_checklists.extend(extract_checklists(tasks))
+    comment_candidates.extend(tasks)
+    save(f"tasks_list_{lid}", {"list_name": lname, "list_id": lid, "space_id": space_id, "tasks": tasks})
 
 
 def extract_linked_tasks(tasks):
@@ -197,34 +212,15 @@ def main():
             print(f"    {len(folders)} folder(s)", flush=True)
 
             for folder in folders:
-                fid = folder["id"]
-                lists_data = get(f"/folder/{fid}/list", params={"archived": "false"})
-                lists = lists_data.get("lists", []) if lists_data else []
-
-                for lst in lists:
-                    lid, lname = lst["id"], lst["name"]
-                    print(f"      List: {lname} — fetching tasks...", flush=True)
-                    tasks = get_tasks_paged(lid, INCLUDE_CLOSED)
-                    print(f"        {len(tasks)} tasks", flush=True)
-                    all_tasks.extend(tasks)
-                    all_linked.extend(extract_linked_tasks(tasks))
-                    all_checklists.extend(extract_checklists(tasks))
-                    comment_candidates.extend(tasks)
-                    save(f"tasks_list_{lid}", {"list_name": lname, "list_id": lid, "space_id": sid, "tasks": tasks})
+                lists_data = get(f"/folder/{folder['id']}/list", params={"archived": "false"})
+                for lst in lists_data.get("lists", []) if lists_data else []:
+                    process_list(lst, sid, INCLUDE_CLOSED, all_tasks, all_linked, all_checklists, comment_candidates)
 
             # Folderless lists
             flists_data = get(f"/space/{sid}/list", params={"archived": "false"})
-            flists = flists_data.get("lists", []) if flists_data else []
-            for lst in flists:
-                lid, lname = lst["id"], lst["name"]
-                print(f"    List (no folder): {lname} — fetching tasks...", flush=True)
-                tasks = get_tasks_paged(lid, INCLUDE_CLOSED)
-                print(f"      {len(tasks)} tasks", flush=True)
-                all_tasks.extend(tasks)
-                all_linked.extend(extract_linked_tasks(tasks))
-                all_checklists.extend(extract_checklists(tasks))
-                comment_candidates.extend(tasks)
-                save(f"tasks_list_{lid}", {"list_name": lname, "list_id": lid, "space_id": sid, "tasks": tasks})
+            for lst in flists_data.get("lists", []) if flists_data else []:
+                print(f"    List (no folder): {lst['name']}", flush=True)
+                process_list(lst, sid, INCLUDE_CLOSED, all_tasks, all_linked, all_checklists, comment_candidates)
 
         # ── Save aggregated data ───────────────────────────────────────────────
         save(f"ALL_tasks_{tid}", all_tasks)
