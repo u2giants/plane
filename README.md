@@ -580,11 +580,9 @@ The `CLICKUP_WEBHOOK_SECRET` also needs to be set as a Cloudflare Worker secret.
 | D1 schema (legacy) | ✅ Live — events table |
 | D1 schema (robust) | ✅ **CREATED** — 15 new tables + views |
 | D1 migration | ✅ **COMPLETED** via GitHub Actions |
-| ClickUp webhooks | ⚠️ **NEEDS UPDATE** — 4 events missing (see WEBHOOK_SETUP.md) |
+| ClickUp webhook | ✅ **CONFIGURED** — pointing to Worker with HMAC validation |
 | list_space_map | ⚠️ **NEEDS POPULATION** — SQL ready in scripts/ |
 | Initial snapshot (Mar 30) | ✅ Complete — 17,746 tasks |
 | Enriched snapshot (Mar 31) | ✅ Complete — members, time, tags, checklists, deps, comments |
 | `/worksp/plane/` on Coolify | ✅ Ready — empty, for build phase |
 | Build phase (Plane on Coolify) | ⏳ Not started — begins after final analysis |
-
-[Webhook secret updated $(date)](about:blank)
