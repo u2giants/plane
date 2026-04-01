@@ -18,13 +18,13 @@ jobs:
           grep "CREATE TABLE" scripts/migrate_robust_schema.sql | wc -l
           echo "Tables"
 
-      - name: Execute migration
+      - name: Execute migration (remote)
         run: |
           echo "=== Executing migration via Wrangler ==="
-          # Note: This requires D1 write permissions in the API token
           wrangler d1 execute clickup-events \
             --file=scripts/migrate_robust_schema.sql \
-            --yes 2>&1 || echo "Wrangler not configured for D1 writes"
+            --remote \
+            --yes 2>&1
         
       - name: Verify tables created
         run: |
