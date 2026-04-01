@@ -1,0 +1,33 @@
+name: Populate list_space_map
+
+on:
+  workflow_dispatch:
+
+jobs:
+  populate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Execute list_space_map population
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          echo "Populating list_space_map..."
+          
+          SQL=$(cat scripts/populate_list_space_map.sql)
+          
+          curl -s -X POST \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/${{ secrets.CLOUDFLARE_DATABASE_ID }}/query" \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"sql\": \"$SQL\"}"
+          
+          echo ""
+          echo "Verifying..."
+          curl -s -X POST \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/${{ secrets.CLOUDFLARE_DATABASE_ID }}/query" \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"sql": "SELECT space_name, COUNT(*) as cnt FROM list_space_map GROUP BY space_name"}'
