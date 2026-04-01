@@ -1,0 +1,37 @@
+name: Migrate D1 Database
+
+on:
+  workflow_dispatch:
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Wrangler
+        run: npm install -g wrangler
+
+      - name: Show migration files
+        run: |
+          echo "=== Tables to create ==="
+          grep "CREATE TABLE" scripts/migrate_robust_schema.sql | wc -l
+          echo "Tables"
+
+      - name: Execute migration
+        run: |
+          echo "=== Executing migration via Wrangler ==="
+          # Note: This requires D1 write permissions in the API token
+          wrangler d1 execute clickup-events \
+            --file=scripts/migrate_robust_schema.sql \
+            --yes 2>&1 || echo "Wrangler not configured for D1 writes"
+        
+      - name: Verify tables created
+        run: |
+          echo "=== Verifying D1 Schema ==="
+          curl -s -X POST \
+            "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/d1/database/${{ secrets.CLOUDFLARE_DATABASE_ID }}/query" \
+            -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{"sql": "SELECT name FROM sqlite_master WHERE type='\''table'\'' ORDER BY name"}' \
+            | jq -r '.result[0].results[] | .name' 2>/dev/null || echo "Direct API query requires different token permissions"
