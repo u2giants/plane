@@ -96,6 +96,16 @@ async function handleClickUpWebhook(request, env) {
         fromValue = item.before ? JSON.stringify(item.before) : null;
         toValue   = item.after  ? JSON.stringify(item.after)  : null;
         break;
+      case 'custom_fields':
+      case 'custom_field':
+        // Custom field updates: extract field name and values
+        const fieldName = item.data?.field_id || item.data?.custom_field_id || 'unknown';
+        fromValue = item.before?.custom_fields ? JSON.stringify(item.before.custom_fields) : null;
+        toValue   = item.after?.custom_fields  ? JSON.stringify(item.after.custom_fields)  : null;
+        // Also store field name for easier querying
+        if (!item.data) item.data = {};
+        item.data.custom_field_name = fieldName;
+        break;
       default:
         fromValue = item.before != null ? JSON.stringify(item.before) : (data.from != null ? JSON.stringify(data.from) : null);
         toValue   = item.after  != null ? JSON.stringify(item.after)  : (data.to   != null ? JSON.stringify(data.to)   : null);
