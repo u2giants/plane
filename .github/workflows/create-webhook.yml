@@ -1,0 +1,42 @@
+name: Create ClickUp Webhook
+
+on:
+  workflow_dispatch:
+
+jobs:
+  create-webhook:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create webhook
+        run: |
+          echo "Creating ClickUp webhook..."
+          echo "Endpoint: https://plane-integrations.u2giants.workers.dev/clickup/webhook"
+          
+          RESPONSE=$(curl -s -X POST \
+            "https://api.clickup.com/api/v2/team/${{ secrets.CLICKUP_WORKSPACE_ID }}/webhook" \
+            -H "Authorization: ${{ secrets.CLICKUP_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "endpoint": "https://plane-integrations.u2giants.workers.dev/clickup/webhook",
+              "events": [
+                "taskCreated", "taskUpdated", "taskDeleted", "taskMoved",
+                "taskCommentPosted", "taskCommentUpdated", "taskAssigneeUpdated",
+                "taskStatusUpdated", "taskTimeEstimateUpdated", "taskTimeTrackedUpdated",
+                "taskPriorityUpdated", "taskDueDateUpdated", "taskTagUpdated",
+                "taskAttachmentUpdated", "taskChecklistItemCompleted",
+                "taskChecklistItemDeleted", "taskLinkedTasksUpdated",
+                "listCreated", "listUpdated", "listDeleted",
+                "folderCreated", "folderUpdated", "folderDeleted",
+                "spaceCreated", "spaceUpdated", "spaceDeleted"
+              ]
+            }')
+          
+          echo "Response: $RESPONSE"
+          
+          # Extract webhook ID and secret
+          WEBHOOK_ID=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id', 'ERROR'))")
+          WEBHOOK_SECRET=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('secret', 'ERROR'))")
+          
+          echo "Webhook ID: $WEBHOOK_ID"
+          echo "::notice::Webhook Secret: $WEBHOOK_SECRET"
+          echo "::notice::IMPORTANT: Update CLICKUP_WEBHOOK_SECRET in GitHub secrets with this value!"
