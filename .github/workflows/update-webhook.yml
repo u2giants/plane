@@ -15,21 +15,9 @@ jobs:
             "https://api.clickup.com/api/v2/webhook/b114d599-aa9a-4069-b08f-a4bf0ac4fe20" \
             -H "Authorization: ${{ secrets.CLICKUP_TOKEN }}" \
             -H "Content-Type: application/json" \
-            -d '{
-              "endpoint": "https://plane-integrations.u2giants.workers.dev/clickup/webhook",
-              "events": [
-                "taskCreated", "taskUpdated", "taskDeleted", "taskMoved",
-                "taskCommentPosted", "taskCommentUpdated", "taskAssigneeUpdated",
-                "taskStatusUpdated", "taskTimeEstimateUpdated", "taskTimeTrackedUpdated",
-                "taskPriorityUpdated", "taskDueDateUpdated", "taskTagUpdated",
-                "listCreated", "listUpdated", "listDeleted",
-                "folderCreated", "folderUpdated", "folderDeleted",
-                "spaceCreated", "spaceUpdated", "spaceDeleted"
-              ],
-              "status": "active"
-            }')
+            -d '{"endpoint":"https://plane-integrations.u2giants.workers.dev/clickup/webhook","events":["taskCreated","taskUpdated","taskDeleted","taskMoved","taskCommentPosted","taskCommentUpdated","taskAssigneeUpdated","taskStatusUpdated","taskTimeEstimateUpdated","taskTimeTrackedUpdated","taskPriorityUpdated","taskDueDateUpdated","taskTagUpdated","listCreated","listUpdated","listDeleted","folderCreated","folderUpdated","folderDeleted","spaceCreated","spaceUpdated","spaceDeleted"],"status":"active"}')
 
           echo "Response: $RESPONSE"
 
-          STATUS=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('health', {}).get('status', d.get('err', 'unknown')))" 2>/dev/null || echo "$RESPONSE")
-          echo "Webhook health status: $STATUS"
+          HEALTH=$(echo "$RESPONSE" | grep -o '"status":"[^"]*"' | head -1)
+          echo "Webhook health: $HEALTH"
