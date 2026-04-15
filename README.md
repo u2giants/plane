@@ -202,8 +202,8 @@ u2giants/plane/
 
 Before customizing Plane, we need to know exactly how the team works — not how we assume they work.
 
-### Why ~14 business days?
-The office is closed Apr 2, 3, 8, and 9 — so a calendar window of ~Apr 1–14 gives approximately 10 real business days of team activity. We need enough data to see patterns, not just one-off events.
+### Why extend to Apr 29?
+The webhook was suspended for 13 days (Apr 1–14) due to an HMAC secret mismatch, eliminating the planned observation window. The system was repaired and re-enabled on Apr 14. The learning phase is extended to **Apr 29** to collect a full 10+ business days of clean behavioral data. Analysis will not run until that window closes.
 
 ### Two data sources
 
@@ -242,9 +242,10 @@ All events are HMAC-SHA256 validated. The Worker rejects any request with a miss
 
 | Date | What | Purpose |
 |------|------|---------|
-| Apr 1, 2026 4pm ET | First check-in | 2 days of data — verify capture is working, spot early patterns |
-| ~Apr 7 | Mid-point | 7 days of data — status transition map, user activity breakdown, Spruce vs POP comparison |
-| ~Apr 14 | Final analysis | Full 10-day picture + Plane customization roadmap — this drives all build decisions |
+| Apr 1, 2026 | ~~First check-in~~ | Skipped — webhook was suspended; no usable data |
+| Apr 14, 2026 | Webhook repaired | System back online; clean data collection begins |
+| ~Apr 22 | Mid-point check-in | ~6 business days of data — verify capture quality, early patterns |
+| ~Apr 29 | Final analysis | Full 10-day picture + Plane customization roadmap — this drives all build decisions |
 
 Reports are saved to `scripts/analysis/checkin_YYYY-MM-DD.md`.
 
@@ -258,8 +259,8 @@ CREATE TABLE events (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   event_type    TEXT NOT NULL,     -- e.g. 'taskStatusUpdated'
   task_id       TEXT,              -- ClickUp task ID
-  list_id       TEXT,              -- ClickUp list ID (see Known Issues -- currently NULL)
-  workspace_id  TEXT,              -- ClickUp team ID (see Known Issues -- currently wrong)
+  list_id       TEXT,              -- ClickUp list ID (from history_items[0].parent_id)
+  workspace_id  TEXT,              -- ClickUp team ID (payload.team_id)
   payload       TEXT NOT NULL,     -- full raw JSON from ClickUp -- NEVER truncate this
   received_at   TEXT NOT NULL DEFAULT (datetime('now')),
   processed     INTEGER DEFAULT 0,
@@ -270,7 +271,7 @@ CREATE TABLE events (
   field_changed TEXT,              -- e.g. 'status', 'priority', 'assignee', 'due_date'
   from_value    TEXT,              -- previous value (JSON-stringified for complex types)
   to_value      TEXT,              -- new value
-  space_id      TEXT               -- which space (see Known Issues -- currently NULL)
+  space_id      TEXT               -- which space (derive via JOIN to list_space_map)
 );
 
 CREATE INDEX idx_event_type  ON events(event_type);
@@ -292,7 +293,7 @@ CREATE TABLE list_space_map (
 );
 ```
 
-ClickUp webhook payloads never include `space_id` directly. To know which division an event came from, you must `JOIN events ON list_space_map`. This table is populated from the snapshot data using `scripts/populate_list_space_map.py`. **As of Apr 1 this table exists but is not yet populated** — see Known Issues.
+ClickUp webhook payloads never include `space_id` directly. To know which division an event came from, you must `JOIN events ON list_space_map`. This table is populated from the snapshot data using `scripts/populate_list_space_map.py`. **As of Apr 14 this table is populated with 21 lists across 3 spaces.**
 
 Division-aware query pattern:
 ```sql
@@ -307,21 +308,17 @@ ORDER BY m.space_name, cnt DESC
 
 ## Known Data Quality Issues
 
-Discovered during an Apr 1 audit of live event data. All three are Worker-level bugs pending fix.
+### ✅ All three Worker bugs resolved — Apr 14, 2026
 
-| Field | Issue | Root Cause | Fix |
-|-------|-------|-----------|-----|
-| `events.list_id` | Always NULL | Worker looks for `item.data.list_id` — that path doesn't exist in real payloads. Actual value is at `history_items[0].parent_id` | Change extraction to `item?.parent_id ?? item?.data?.subcategory_id ?? payload.list_id` |
-| `events.space_id` | Always NULL | ClickUp webhooks never include `space_id` in the payload. Must be derived from list_id via list_space_map | Populate list_space_map first; space_id will be accessible via JOIN |
-| `events.workspace_id` | Stores webhook registration ID (`b114d599-...`), not the team ID | Worker uses `payload.webhook_id` instead of `payload.team_id` | Change to `payload.team_id ?? null` (correct value is `2298436`) |
+Three extraction bugs were discovered during an Apr 1 audit and fully resolved on Apr 14:
 
-**Impact:** Until the fix is deployed, all three of these columns are unusable for analysis. The `user_name`, `field_changed`, `from_value`, `to_value`, and `event_type` columns are working correctly. The full raw `payload` column always contains all data and can be used as a fallback.
+| Field | Issue | Resolution |
+|-------|-------|-----------|
+| `events.list_id` | Was always NULL — Worker looked for `item.data.list_id` (doesn't exist) | Fixed: now extracted from `history_items[0].parent_id`. All 52 historical rows backfilled. |
+| `events.space_id` | Always NULL — ClickUp webhooks don't include space_id | By design: use `JOIN list_space_map` on `list_id` to get division context. |
+| `events.workspace_id` | Was storing webhook registration ID (`b114d599-...`) instead of team ID | Fixed: now extracted from `payload.team_id`. All 52 historical rows backfilled. Correct value: `2298436`. |
 
-**Pending fix sequence:**
-1. Fix Worker (`integrations/worker/src/index.js`) — correct list_id and workspace_id extraction
-2. Deploy via push to `main`
-3. Populate `list_space_map` from snapshot data using `scripts/populate_list_space_map.py`
-4. Backfill `list_id` on existing rows by re-parsing `json_extract(payload, '$.history_items[0].parent_id')`
+All columns are now reliable. Division-aware queries using `LEFT JOIN list_space_map m ON e.list_id = m.list_id` work correctly against all rows.
 
 ### Duplicate events (expected, not a bug)
 ClickUp fires `taskUpdated` for every change AND the specific event type. A single status change produces two rows:
@@ -497,18 +494,17 @@ Plane is AGPL-3.0. For internal deployments (one company using their own instanc
 ### DON'T
 
 - **Don't delete the test event (id=1)** — it exists as a pipeline verification record
-- **Don't trust `list_id` or `space_id` columns** until the Worker fix is deployed — both are currently NULL for all rows
-- **Don't trust `workspace_id`** — it currently stores the webhook registration ID (`b114d599-...`), not the team ID (`2298436`)
+- **Don't use `space_id` column directly** — ClickUp webhooks never include it; derive via `JOIN list_space_map m ON e.list_id = m.list_id`
 - **Don't count `taskUpdated` as unique actions** — it double-fires alongside every specific event type; use `WHERE event_type != 'taskUpdated'` for action counts
 - **Don't edit code directly on the Coolify server** — GitHub is the source of truth, always
 - **Don't run the snapshot locally against production** — use GitHub Actions; local runs don't store artifacts and use developer-local credentials
 - **Don't add time tracking in Plane at launch** — the team doesn't use it (zero time tracking events in ClickUp data); it will be ignored
 - **Don't add priority enforcement in Plane at launch** — fix the UI visibility first; enforcement without visibility creates frustration
 - **Don't assume ClickUp webhook payloads are complete** — many fields aren't present; always verify against the raw `payload` column before concluding a field doesn't exist
-- **Don't deploy Plane** until the three Worker bugs are fixed and list_space_map is populated — you won't be able to run meaningful division-level analysis otherwise
+- **Don't deploy Plane** until the learning phase ends (~Apr 29) and final analysis is complete — the analysis drives all customization decisions
 
 ### When touching the Worker
-- The `list_id` fix must use `history_items[0].parent_id` — not `item.data.list_id` (doesn't exist)
+- `list_id` uses `history_items[0].parent_id` — not `item.data.list_id` (that path doesn't exist in real payloads)
 - Test HMAC locally before pushing: compute `HMAC-SHA256(payload, secret)` and verify it matches `X-Signature`
 - The Worker must respond `200 ok` quickly — ClickUp marks endpoints unhealthy after repeated failures
 
@@ -531,13 +527,13 @@ Plane is AGPL-3.0. For internal deployments (one company using their own instanc
 Some requests are rejected before writing to D1 (HMAC validation failure, malformed JSON). The gap is normal. Rejected requests are logged via `console.warn` in the Worker — check Cloudflare Worker logs for details.
 
 **"space_id is NULL for all events"**
-Known issue. ClickUp webhooks don't include space_id in the payload. Needs: (1) Worker fix to correctly populate list_id, (2) list_space_map populated from snapshot. Then use JOIN instead of the space_id column directly.
+By design — ClickUp webhooks never include space_id in the payload. Use `LEFT JOIN list_space_map m ON e.list_id = m.list_id` to get division context. Do not query `space_id` directly.
 
-**"list_id is NULL for all events"**
-Known Worker bug. The extraction path `item.data.list_id` doesn't exist. Real value is `history_items[0].parent_id`. Pending fix.
+**"list_id is NULL for old events"**
+This was a Worker bug (fixed Apr 14). All historical rows were backfilled. If you see NULLs, the event either pre-dates the fix and was missed in the backfill, or the payload had no `history_items[0].parent_id`.
 
-**"workspace_id column has a UUID that looks like a webhook ID, not a team ID"**
-Known Worker bug. Currently stores `payload.webhook_id` (the webhook registration ID) instead of `payload.team_id`. The correct team ID is `2298436`. Pending fix.
+**"workspace_id column has a UUID that looks like a webhook ID"**
+This was a Worker bug (fixed Apr 14). All historical rows were backfilled with the correct team ID (`2298436`). If you see the old UUID (`b114d599-...`), something is wrong.
 
 **"taskUpdated events dominate the event count"**
 Expected behavior. ClickUp fires `taskUpdated` for every change type AND fires the specific event (e.g., `taskStatusUpdated`). Filter with `WHERE event_type != 'taskUpdated'` for unique-action analysis.
@@ -572,22 +568,25 @@ The `CLICKUP_WEBHOOK_SECRET` also needs to be set as a Cloudflare Worker secret.
 
 ## Current Status
 
-### ✅ What's Done (Apr 1, 2026)
+### ✅ What's Done (Apr 14, 2026)
 
 - ✅ Robust D1 schema: 15 tables + 4 analysis views with 25+ indexes
 - ✅ Worker deployed with HMAC validation + custom field update parsing
 - ✅ list_space_map populated: POP Creations, Spruce Line, designflow (21 lists)
 - ✅ Full workspace snapshot: 17,751 tasks, 495 linked tasks, 7,184 checklists
 - ✅ Webhook capturing: status, assignee, priority, due date, tag, and custom field changes
+- ✅ Worker bugs fixed: list_id (parent_id), workspace_id (team_id) — all 52 historical rows backfilled
+- ✅ Webhook re-enabled after 13-day suspension (Apr 1–14); confirmed live with fail_count: 0
+- ✅ New Cloudflare API token issued and stored in GitHub Secrets (previous token was invalidated)
 
 ### ⏳ What's Next
 
 | Phase | What | When |
 |-------|------|------|
-| **Learning** | 14-day observation window | Now → Apr 14 |
-| **Checkpoint 1** | Mid-point analysis (7 days) | ~Apr 7 |
-| **Checkpoint 2** | Final analysis + Plane roadmap | ~Apr 14 |
-| **Build** | Deploy Plane on Coolify, customize | After Apr 14 |
+| **Learning (extended)** | Extended observation window — 13-day outage required extension | Apr 14 → Apr 29 |
+| **Checkpoint** | Mid-point analysis (~6 business days of data) | ~Apr 22 |
+| **Final analysis** | Full picture + Plane customization roadmap | ~Apr 29 |
+| **Build** | Deploy Plane on Coolify, customize | After Apr 29 |
 
 ### 🔗 Monitoring URLs
 
@@ -615,11 +614,12 @@ curl -s -X POST "https://api.cloudflare.com/client/v4/accounts/8303d11002766bf1c
 | Component | Status | Last Updated |
 |-----------|--------|--------------|
 | GitHub repo | ✅ Live | — |
-| Cloudflare Worker | ✅ Live + Custom field parsing | Apr 1, 2026 |
+| Cloudflare Worker | ✅ Live + bugs fixed (list_id, workspace_id) | Apr 14, 2026 |
 | D1 Schema (robust) | ✅ 15 tables + views created | Apr 1, 2026 |
 | D1 Migration | ✅ Completed via GitHub Actions | Apr 1, 2026 |
-| ClickUp Webhook | ✅ Live — 22 event types | — |
+| D1 Historical backfill | ✅ 52 rows backfilled (list_id, workspace_id) | Apr 14, 2026 |
+| ClickUp Webhook | ✅ Live — 22 event types, fail_count: 0 | Apr 14, 2026 |
 | list_space_map | ✅ POPULATED — 21 lists → 3 spaces | Apr 1, 2026 |
 | ClickUp Snapshot | ✅ 17,751 tasks captured | Apr 1, 2026 |
 | Coolify `/worksp/plane/` | ✅ Ready (empty) | — |
-| Build Phase | ⏳ Waiting — starts after final analysis | — |
+| Build Phase | ⏳ Waiting — starts after final analysis (~Apr 29) | — |
