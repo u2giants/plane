@@ -552,24 +552,27 @@ def load_members(fetched_at: str) -> None:
 
 def load_tasks(fetched_at: str) -> None:
     """
-    Load all tasks_list_{list_id}_*.json.gz files.
+    Load all task snapshot files into D1.
+
+    Supports two naming conventions produced by different snapshot script versions:
+      Old: tasks_list_{list_id}_{timestamp}.json.gz
+      New: tasks_{list_id}_{timestamp}.json.gz
+
     Also populates: task_custom_fields, task_links, task_checklists,
                     checklist_items, task_tags, task_assignments.
     """
-    task_files = sorted(SNAPSHOT_DIR.glob("tasks_list_*_*.json.gz"))
-    if not task_files:
-        # Try per-list latest only
-        task_files = []
-        for p in sorted(SNAPSHOT_DIR.glob("tasks_list_*.json.gz")):
-            task_files.append(p)
+    # Collect both naming patterns, then deduplicate by list_id
+    all_files = sorted(SNAPSHOT_DIR.glob("tasks_*.json.gz"))
+    # Exclude non-task files (e.g., tasks_summary or other prefixes)
+    task_files = [p for p in all_files if re.search(r"tasks_(?:list_)?\d", p.name)]
 
     if not task_files:
         print("[tasks] No snapshot files found — skipping.")
         return
 
-    # Deduplicate: for each list_id keep only the latest file
+    # Regex handles both: tasks_list_{id}_{ts} and tasks_{id}_{ts}
+    _list_re = re.compile(r"tasks_(?:list_)?(\d+)_")
     by_list: dict = {}
-    _list_re = re.compile(r"tasks_list_([^_]+)_")
     for p in task_files:
         m = _list_re.search(p.name)
         if m:
@@ -594,8 +597,14 @@ def load_tasks(fetched_at: str) -> None:
             continue
 
         list_name = data.get("list_name")
+        # space_id: old format stores it top-level; new format stores it on each task
         space_id = data.get("space_id")
         tasks = data.get("tasks", [])
+        # If not in file header, try to read from first task object
+        if not space_id and tasks:
+            first = tasks[0] if tasks else {}
+            space_obj = first.get("space") or {}
+            space_id = str(space_obj.get("id") or "") or None
 
         # Ensure list row exists
         list_stmts = [{
@@ -849,69 +858,92 @@ def load_tasks(fetched_at: str) -> None:
     )
 
 
+def _iter_comment_entries(data: Any) -> list:
+    """
+    Normalize comment data from either snapshot format into a flat list of
+    {"task_id": ..., "comments": [...]} dicts.
+
+    Old format (comments_sample_*): list of {"task_id", "task_name", "comments"}
+    New format (comments_{lid}_*):  {"list_id", "list_name", "comment_data": [...]}
+      where each item is {"task_id", "task_name", "comments": [...]}
+    """
+    if isinstance(data, list):
+        return data  # old format — already a list of task-comment entries
+    if isinstance(data, dict):
+        # New format: nested under "comment_data"
+        inner = data.get("comment_data") or []
+        if isinstance(inner, list):
+            return inner
+    return []
+
+
 def load_comments(fetched_at: str) -> None:
-    """Load comments_sample_{workspace_id}_*.json.gz into task_comments."""
-    path = latest_file(f"comments_sample_{WORKSPACE_ID}_")
-    if path is None:
-        print("[comments] No snapshot file found — skipping.")
+    """
+    Load comment snapshot files into task_comments.
+
+    Supports both naming conventions:
+      Old: comments_sample_{workspace_id}_{timestamp}.json.gz  (one file, all tasks)
+      New: comments_{list_id}_{timestamp}.json.gz              (one file per list)
+    """
+    # Collect all comment files — old and new naming
+    comment_files = sorted(SNAPSHOT_DIR.glob("comments_*.json.gz"))
+    if not comment_files:
+        print("[comments] No snapshot files found — skipping.")
         return
-    print(f"[comments] Loading from {path.name}")
 
-    try:
-        data = load_gz_json(path)
-    except Exception as exc:
-        print(f"[comments] Failed to load file: {exc}")
-        return
+    COMMENT_SQL = (
+        "INSERT OR REPLACE INTO task_comments "
+        "(id, task_id, user_id, user_name, content, comment_count, "
+        "mention_count, attachment_count, created_at, updated_at, "
+        "fetched_at, source, file_paths, licensor_hint) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    )
 
-    # data is an array of {"task_id": ..., "task_name": ..., "comments": [...]}
-    if not isinstance(data, list):
-        data = [data]
+    total_files = 0
+    total_count = 0
 
-    statements = []
-    count = 0
-
-    for entry in data:
-        task_id = entry.get("task_id")
-        if not task_id:
+    for path in comment_files:
+        print(f"[comments] Loading from {path.name}")
+        try:
+            data = load_gz_json(path)
+        except Exception as exc:
+            print(f"[comments] Failed to load {path.name}: {exc}")
             continue
-        for comment in (entry.get("comments") or []):
-            try:
-                row = parse_comment(comment, task_id, fetched_at)
-                if row is None:
-                    continue
-                statements.append({
-                    "sql": (
-                        "INSERT OR REPLACE INTO task_comments "
-                        "(id, task_id, user_id, user_name, content, comment_count, "
-                        "mention_count, attachment_count, created_at, updated_at, "
-                        "fetched_at, source, file_paths, licensor_hint) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-                    ),
-                    "params": [
-                        row["id"],
-                        row["task_id"],
-                        row["user_id"],
-                        row["user_name"],
-                        row["content"],
-                        row["comment_count"],
-                        row["mention_count"],
-                        row["attachment_count"],
-                        row["created_at"],
-                        row["updated_at"],
-                        row["fetched_at"],
-                        row["source"],
-                        row["file_paths"],
-                        row["licensor_hint"],
-                    ],
-                })
-                count += 1
-                if count % PROGRESS_EVERY == 0:
-                    print(f"  [comments] {count} rows queued…")
-            except Exception as exc:
-                warnings.warn(f"[comments] Row error task_id={task_id}: {exc}")
 
-    execute_batch(statements)
-    print(f"[comments] Upserted {count} rows.")
+        entries = _iter_comment_entries(data)
+        statements = []
+        count = 0
+
+        for entry in entries:
+            task_id = entry.get("task_id")
+            if not task_id:
+                continue
+            for comment in (entry.get("comments") or []):
+                try:
+                    row = parse_comment(comment, task_id, fetched_at)
+                    if row is None:
+                        continue
+                    statements.append({
+                        "sql": COMMENT_SQL,
+                        "params": [
+                            row["id"], row["task_id"], row["user_id"], row["user_name"],
+                            row["content"], row["comment_count"], row["mention_count"],
+                            row["attachment_count"], row["created_at"], row["updated_at"],
+                            row["fetched_at"], row["source"], row["file_paths"],
+                            row["licensor_hint"],
+                        ],
+                    })
+                    count += 1
+                    if (total_count + count) % PROGRESS_EVERY == 0:
+                        print(f"  [comments] {total_count + count} rows queued…")
+                except Exception as exc:
+                    warnings.warn(f"[comments] Row error task_id={task_id}: {exc}")
+
+        execute_batch(statements)
+        total_files += 1
+        total_count += count
+
+    print(f"[comments] Upserted {total_count} rows from {total_files} file(s).")
 
 # ---------------------------------------------------------------------------
 # Entry point
