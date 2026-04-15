@@ -1,0 +1,68 @@
+name: Load Snapshot into D1
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'GitHub Actions run ID of the snapshot to load (default: latest)'
+        required: false
+        default: ''
+
+jobs:
+  load:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    name: Load ClickUp snapshot artifacts into D1
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Resolve run ID
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          INPUT_RUN="${{ github.event.inputs.run_id }}"
+          if [ -n "$INPUT_RUN" ]; then
+            echo "run_id=$INPUT_RUN" >> $GITHUB_OUTPUT
+            echo "Using specified run ID: $INPUT_RUN"
+          else
+            # Find latest successful clickup-snapshot run
+            RUN_ID=$(gh run list --repo ${{ github.repository }} \
+              --workflow clickup-snapshot.yml \
+              --status success \
+              --limit 1 \
+              --json databaseId \
+              --jq '.[0].databaseId')
+            echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
+            echo "Using latest successful snapshot run ID: $RUN_ID"
+          fi
+
+      - name: Download snapshot artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p scripts/snapshot_output
+          gh run download ${{ steps.resolve.outputs.run_id }} \
+            --repo ${{ github.repository }} \
+            --dir scripts/snapshot_output/
+          # Artifacts download into a named subdirectory — flatten one level
+          find scripts/snapshot_output -mindepth 2 -name "*.json.gz" \
+            -exec mv {} scripts/snapshot_output/ \;
+          find scripts/snapshot_output -mindepth 2 -name "_manifest.json" \
+            -exec mv {} scripts/snapshot_output/ \; 2>/dev/null || true
+          echo "Files in snapshot_output:"
+          ls scripts/snapshot_output/ | head -30
+
+      - name: Load into D1
+        working-directory: scripts
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_D1_DATABASE_ID: ${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: python load_snapshot_to_d1.py
