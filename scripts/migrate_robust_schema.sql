@@ -242,6 +242,27 @@ CREATE TABLE IF NOT EXISTS custom_field_definitions (
 
 CREATE INDEX IF NOT EXISTS idx_cfd_list ON custom_field_definitions(list_id);
 
+-- Time tracking entries (last 90 days, fetched by snapshot script)
+CREATE TABLE IF NOT EXISTS time_entries (
+  id            TEXT PRIMARY KEY,
+  task_id       TEXT,
+  user_id       TEXT,
+  user_name     TEXT,
+  start_time    TEXT,
+  end_time      TEXT,
+  duration_ms   INTEGER,
+  duration_hrs  REAL,
+  billable      INTEGER DEFAULT 0,
+  description   TEXT,
+  tags          TEXT,    -- JSON array of tag names
+  source        TEXT DEFAULT 'snapshot',
+  fetched_at    TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_te_task  ON time_entries(task_id);
+CREATE INDEX IF NOT EXISTS idx_te_user  ON time_entries(user_id);
+CREATE INDEX IF NOT EXISTS idx_te_start ON time_entries(start_time);
+
 -- ============================================
 -- PHASE 4: Raw Event Log
 -- ============================================
