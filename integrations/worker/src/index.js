@@ -190,6 +190,17 @@ async function handleClickUpWebhook(request, env) {
     }
   }
 
+  if (eventType === 'taskCustomFieldUpdated') {
+    try {
+      await writeCustomFieldChange(env.DB, {
+        taskId,
+        item,
+      });
+    } catch (err) {
+      console.error('task_custom_fields write failed:', err.message);
+    }
+  }
+
   // Goal / key-result events: already written to events above; no further action needed.
   // GOAL_EVENT_TYPES is checked implicitly — these events skip all the blocks above.
 
@@ -312,6 +323,56 @@ async function writeTaskStub(db, { taskId, listId, workspaceId, spaceId, toValue
     spaceId,
     toValue,  // status string from the after field
     userId,
+  ).run();
+}
+
+// 5. custom field update
+async function writeCustomFieldChange(db, { taskId, item }) {
+  if (!taskId) return;
+
+  const fieldId   = item.field_id ? String(item.field_id) : null;
+  const fieldName = item.field || fieldId;
+  if (!fieldId || !fieldName) return;
+
+  const after = item.after;
+  let valueText    = null;
+  let valueNumber  = null;
+  let valueDate    = null;
+  let valueBoolean = null;
+
+  if (after === null || after === undefined) {
+    // field cleared — write nulls
+  } else if (typeof after === 'number') {
+    valueNumber = after;
+  } else if (typeof after === 'boolean') {
+    valueBoolean = after ? 1 : 0;
+  } else if (typeof after === 'object') {
+    // dropdown option: {id, name, color, ...}
+    valueText = after.name || after.value || JSON.stringify(after);
+  } else {
+    const s = String(after);
+    // ISO date-like strings
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
+      valueDate = s;
+    } else if (!isNaN(Number(s)) && s.trim() !== '') {
+      valueNumber = Number(s);
+    } else {
+      valueText = s;
+    }
+  }
+
+  await db.prepare(`
+    INSERT OR REPLACE INTO task_custom_fields
+      (task_id, field_id, field_name, value_text, value_number, value_date, value_boolean, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  `).bind(
+    taskId,
+    fieldId,
+    fieldName,
+    valueText,
+    valueNumber,
+    valueDate,
+    valueBoolean,
   ).run();
 }
 
