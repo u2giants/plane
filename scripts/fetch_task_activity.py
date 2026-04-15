@@ -200,10 +200,18 @@ def cu_get(path: str, params: dict = None) -> dict:
 # ---------------------------------------------------------------------------
 
 def iter_snapshot_tasks(list_id_filter: Optional[str] = None):
-    """Yield (list_id, task_dict) from every tasks_list_*.json.gz file."""
-    _re = re.compile(r"tasks_list_([^_]+)_")
+    """
+    Yield (list_id, task_dict) from every task snapshot file.
+
+    Handles both naming conventions:
+      Old: tasks_list_{list_id}_{timestamp}.json.gz
+      New: tasks_{list_id}_{timestamp}.json.gz
+    """
+    _re = re.compile(r"tasks_(?:list_)?(\d+)_")
     seen: dict = {}
-    for p in sorted(SNAPSHOT_DIR.glob("tasks_list_*.json.gz")):
+    all_files = sorted(SNAPSHOT_DIR.glob("tasks_*.json.gz"))
+    task_files = [p for p in all_files if re.search(r"tasks_(?:list_)?\d", p.name)]
+    for p in task_files:
         m = _re.search(p.name)
         if not m:
             continue
@@ -216,9 +224,14 @@ def iter_snapshot_tasks(list_id_filter: Optional[str] = None):
         try:
             data  = load_gz_json(path)
             tasks = data.get("tasks", [])
+            # space_id: old format top-level; new format on each task object
             sid   = data.get("space_id")
+            if not sid and tasks:
+                space_obj = tasks[0].get("space") or {}
+                sid = str(space_obj.get("id") or "") or None
             for t in tasks:
-                t["_space_id"] = sid   # stash for transition row
+                t["_space_id"] = sid
+                t["_list_id"]  = lid
                 yield lid, t
         except Exception as exc:
             warnings.warn(f"Failed to read {path.name}: {exc}")
