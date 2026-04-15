@@ -67,7 +67,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   closed_at       TEXT,
   fetched_at      TEXT DEFAULT (datetime('now')),
   space_id        TEXT,
-  workspace_id    TEXT
+  workspace_id    TEXT,
+  licensor        TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_list ON tasks(list_id);
@@ -134,7 +135,9 @@ CREATE TABLE IF NOT EXISTS task_comments (
   created_at        TEXT,
   updated_at        TEXT,
   fetched_at        TEXT DEFAULT (datetime('now')),
-  source            TEXT DEFAULT 'webhook'
+  source            TEXT DEFAULT 'webhook',
+  file_paths        TEXT,
+  licensor_hint     TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_comment_task ON task_comments(task_id);
