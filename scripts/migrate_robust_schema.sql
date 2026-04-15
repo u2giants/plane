@@ -528,6 +528,24 @@ WHERE st.source = 'api_history'
 GROUP BY st.space_id, ws.stage_name, ws.stage_category, ws.stage_order
 ORDER BY ws.stage_order;
 
+-- Task effort summary — hours logged per task/product from time_entries
+CREATE VIEW IF NOT EXISTS task_effort AS
+SELECT
+  te.task_id,
+  p.name                                      AS product_name,
+  p.licensor,
+  p.retailer,
+  p.stage_name,
+  COUNT(te.id)                                AS entry_count,
+  COUNT(DISTINCT te.user_id)                  AS contributor_count,
+  ROUND(SUM(te.duration_hrs), 2)              AS total_hours,
+  ROUND(AVG(te.duration_hrs), 2)              AS avg_hours_per_entry,
+  MIN(te.start_time)                          AS first_logged,
+  MAX(te.start_time)                          AS last_logged
+FROM time_entries te
+LEFT JOIN products p ON p.id = te.task_id
+GROUP BY te.task_id;
+
 -- ============================================
 -- VERIFICATION
 -- ============================================
