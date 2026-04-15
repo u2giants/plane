@@ -343,29 +343,77 @@ def _cf_request(endpoint: str, payload: dict, retry: int = 5) -> dict:
 
 
 def d1_query(sql: str, params: list) -> dict:
-    return _cf_request("query", {"sql": sql, "params": params})
-
-
-def d1_batch(requests: list) -> dict:
-    """Send a batch of {sql, params} dicts to the D1 /batch endpoint."""
-    return _cf_request("batch", {"requests": requests})
+    return _cf_request("query", {"sql": sql, "params": [str(p) if isinstance(p, int) and not isinstance(p, bool) else p for p in params]})
 
 
 def execute_batch(statements: list) -> None:
     """
-    Execute a list of (sql, params) tuples in BATCH_SIZE chunks.
-    Each element of `statements` is a dict {"sql": ..., "params": [...]}.
+    Execute a list of {"sql": ..., "params": [...]} dicts against D1.
+
+    The D1 REST API only exposes /query (no /batch endpoint). To stay efficient
+    we group consecutive statements that share the same SQL template into
+    multi-row INSERTs, collapsing N individual calls into ~N/BATCH_SIZE calls.
     """
-    for i in range(0, len(statements), BATCH_SIZE):
-        chunk = statements[i : i + BATCH_SIZE]
-        try:
-            result = d1_batch(chunk)
-            # result is a list of per-query results
-            if isinstance(result, dict) and not result.get("success", True):
-                errors = result.get("errors") or []
-                warnings.warn(f"D1 batch warning: {errors}")
-        except Exception as exc:
-            warnings.warn(f"Batch execution error (chunk {i}–{i+len(chunk)-1}): {exc}")
+    if not statements:
+        return
+
+    # Group consecutive rows with the same SQL template
+    groups: list = []
+    for stmt in statements:
+        sql = stmt["sql"]
+        params = stmt["params"]
+        if groups and groups[-1][0] == sql:
+            groups[-1][1].append(params)
+        else:
+            groups.append([sql, [params]])
+
+    for sql_template, rows_params in groups:
+        # Split into chunks of BATCH_SIZE rows
+        for i in range(0, len(rows_params), BATCH_SIZE):
+            chunk = rows_params[i : i + BATCH_SIZE]
+            try:
+                _execute_multi_row(sql_template, chunk)
+            except Exception as exc:
+                warnings.warn(f"execute_batch error (rows {i}–{i+len(chunk)-1}): {exc}")
+
+
+def _execute_multi_row(sql_template: str, rows: list) -> None:
+    """
+    Combine multiple rows with the same INSERT template into a single
+    multi-row INSERT and send one /query request.
+
+    sql_template looks like:
+      INSERT OR REPLACE INTO t (a, b, c) VALUES (?, ?, ?)
+    We expand it to:
+      INSERT OR REPLACE INTO t (a, b, c) VALUES (?, ?, ?), (?, ?, ?), ...
+    with a flat params list.
+    """
+    if not rows:
+        return
+
+    # Count placeholders in the template (one row's worth)
+    n_cols = sql_template.count("?")
+
+    if len(rows) == 1:
+        # No expansion needed
+        d1_query(sql_template, rows[0])
+        return
+
+    # Build the VALUES portion: repeat "(?, ?, ...)" for each row
+    single_values = "(" + ", ".join(["?"] * n_cols) + ")"
+    multi_values  = ", ".join([single_values] * len(rows))
+
+    # Replace the last VALUES (...) in the template
+    # Template ends with "VALUES (?, ?, ?)" — replace that suffix
+    prefix = sql_template[:sql_template.rfind("VALUES")].rstrip()
+    expanded_sql = f"{prefix} VALUES {multi_values}"
+
+    # Flatten params
+    flat_params: list = []
+    for row in rows:
+        flat_params.extend(row)
+
+    d1_query(expanded_sql, flat_params)
 
 
 # ---------------------------------------------------------------------------
@@ -444,6 +492,11 @@ def load_members(fetched_at: str) -> None:
         data = load_gz_json(path)
     except Exception as exc:
         print(f"[members] Failed to load file: {exc}")
+        return
+
+    # The members_seats API sometimes returns null (known ClickUp issue)
+    if data is None:
+        print("[members] File contains null data — API returned nothing, skipping.")
         return
 
     # Data may be a list of member objects or wrapped
