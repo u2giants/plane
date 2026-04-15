@@ -261,7 +261,21 @@ CREATE INDEX IF NOT EXISTS idx_raw_task ON raw_events(task_id);
 CREATE INDEX IF NOT EXISTS idx_raw_time ON raw_events(received_at);
 
 -- ============================================
--- PHASE 5: Analysis Views
+-- PHASE 5: Business Context Reference
+-- ============================================
+
+-- Workflow stage definitions — maps raw ClickUp status strings to ordered,
+-- human-readable pipeline stages so AI and analytics can reason about sequence.
+CREATE TABLE IF NOT EXISTS workflow_stages (
+  status_raw      TEXT PRIMARY KEY,
+  stage_order     INTEGER NOT NULL,
+  stage_name      TEXT NOT NULL,
+  stage_category  TEXT NOT NULL,   -- Ideation|Concept|Design|Pre-Production|Production|Fulfillment|Complete|Admin
+  description     TEXT
+);
+
+-- ============================================
+-- PHASE 6: Analysis Views
 -- ============================================
 
 -- Task completion times
@@ -306,6 +320,67 @@ LEFT JOIN status_transitions s ON u.id = s.user_id
 LEFT JOIN task_comments c ON u.id = c.user_id
 LEFT JOIN task_assignments a ON u.id = a.user_id
 GROUP BY u.id;
+
+-- Denormalized task view — one row per task with all key dimensions joined.
+-- Primary query surface for AI analysis; avoids multi-table JOINs.
+CREATE VIEW IF NOT EXISTS task_details AS
+SELECT
+  t.id,
+  t.name,
+  t.list_id,
+  l.name                                                          AS list_name,
+  t.space_id,
+  s.name                                                          AS space_name,
+  t.status,
+  ws.stage_order,
+  ws.stage_name,
+  ws.stage_category,
+  t.status_type,
+  t.licensor,
+  t.parent_task_id,
+  CASE WHEN t.parent_task_id IS NOT NULL THEN 1 ELSE 0 END       AS is_subtask,
+  t.created_at,
+  t.updated_at,
+  t.closed_at,
+  t.due_date,
+  t.start_date,
+  t.priority,
+  t.creator_id,
+  t.workspace_id,
+  ROUND((julianday('now') - julianday(t.updated_at)), 1)         AS days_in_current_status,
+  MAX(CASE WHEN cf.field_name IN ('🧑‍✈ Customer / Retailer','customer') THEN cf.value_text END) AS retailer,
+  MAX(CASE WHEN cf.field_name = '📚 Category'    THEN cf.value_text END) AS product_category,
+  MAX(CASE WHEN cf.field_name = 'put-up'         THEN cf.value_text END) AS put_up,
+  MAX(CASE WHEN cf.field_name = '🏭 Factory'     THEN cf.value_text END) AS factory,
+  MAX(CASE WHEN cf.field_name = '👤 Buyer'       THEN cf.value_text END) AS buyer,
+  MAX(CASE WHEN cf.field_name = 'Idea/Task Type' THEN cf.value_text END) AS task_type,
+  MAX(CASE WHEN cf.field_name = 'cust program'   THEN cf.value_text END) AS customer_program,
+  MAX(CASE WHEN cf.field_name = 'SMPL Req'       THEN cf.value_number END) AS sample_req_count
+FROM tasks t
+LEFT JOIN workflow_stages ws ON ws.status_raw = t.status
+LEFT JOIN lists l            ON l.id = t.list_id
+LEFT JOIN spaces s           ON s.id = t.space_id
+LEFT JOIN task_custom_fields cf ON cf.task_id = t.id
+GROUP BY t.id;
+
+-- Pipeline health snapshot — active tasks per stage with age signals.
+-- Use this to spot bottlenecks (stages with many tasks and high avg_days).
+CREATE VIEW IF NOT EXISTS pipeline_health AS
+SELECT
+  ws.stage_category,
+  ws.stage_order,
+  ws.stage_name,
+  COUNT(t.id)                                                  AS task_count,
+  COUNT(CASE WHEN t.parent_task_id IS NULL THEN 1 END)        AS parent_task_count,
+  COUNT(CASE WHEN t.parent_task_id IS NOT NULL THEN 1 END)    AS subtask_count,
+  ROUND(AVG(julianday('now') - julianday(t.updated_at)), 1)   AS avg_days_in_stage,
+  ROUND(MAX(julianday('now') - julianday(t.updated_at)), 0)   AS max_days_in_stage,
+  COUNT(DISTINCT t.licensor)                                   AS distinct_licensors
+FROM tasks t
+LEFT JOIN workflow_stages ws ON ws.status_raw = t.status
+WHERE t.status_type NOT IN ('closed')
+GROUP BY ws.stage_category, ws.stage_order, ws.stage_name
+ORDER BY ws.stage_order;
 
 -- ============================================
 -- VERIFICATION
