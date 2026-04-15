@@ -1,0 +1,41 @@
+name: Update ClickUp Webhook Events
+
+on:
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    name: Update webhook subscription to include goal events
+
+    steps:
+      - name: Update webhook event subscriptions
+        run: |
+          echo "Updating ClickUp webhook b114d599-aa9a-4069-b08f-a4bf0ac4fe20..."
+
+          RESPONSE=$(curl -s -X PUT \
+            "https://api.clickup.com/api/v2/webhook/b114d599-aa9a-4069-b08f-a4bf0ac4fe20" \
+            -H "Authorization: ${{ secrets.CLICKUP_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "endpoint": "https://plane-integrations.u2giants.workers.dev/clickup/webhook",
+              "status": "active",
+              "events": [
+                "taskCreated", "taskUpdated", "taskDeleted", "taskMoved",
+                "taskCommentPosted", "taskCommentUpdated",
+                "taskAssigneeUpdated", "taskStatusUpdated",
+                "taskTimeEstimateUpdated", "taskTimeTrackedUpdated",
+                "taskPriorityUpdated", "taskDueDateUpdated", "taskTagUpdated",
+                "listCreated", "listUpdated", "listDeleted",
+                "folderCreated", "folderUpdated", "folderDeleted",
+                "spaceCreated", "spaceUpdated", "spaceDeleted",
+                "goalCreated", "goalUpdated", "goalDeleted",
+                "keyResultCreated", "keyResultUpdated", "keyResultDeleted"
+              ]
+            }')
+
+          echo "Response: $RESPONSE"
+
+          STATUS=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('webhook',{}).get('health','unknown'))" 2>/dev/null || echo "parse error")
+          FAIL=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('webhook',{}).get('fail_count','?'))" 2>/dev/null || echo "?")
+          echo "Webhook health: $STATUS  fail_count: $FAIL"
