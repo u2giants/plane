@@ -1,53 +1,56 @@
-name: ClickUp Snapshot
+name: ClickUp Workspace Snapshot
 
 on:
   workflow_dispatch:
     inputs:
       include_closed:
-        description: 'Include closed/archived tasks'
+        description: "Include closed tasks (true/false)"
         required: false
-        default: 'true'
-        type: boolean
+        default: "true"
+  schedule:
+    # Run daily at 02:00 UTC
+    - cron: "0 2 * * *"
 
 jobs:
   snapshot:
     runs-on: ubuntu-latest
-    name: Pull full ClickUp workspace snapshot
-    timeout-minutes: 60
+    timeout-minutes: 360
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
 
       - name: Install dependencies
         run: pip install requests
 
-      - name: Run snapshot
-        working-directory: scripts
+      - name: Restore snapshot manifest (resume capability)
+        uses: actions/cache@v4
+        with:
+          path: snapshot_output/_manifest.json
+          key: clickup-manifest-${{ github.run_id }}
+          restore-keys: |
+            clickup-manifest-
+
+      - name: Run ClickUp snapshot
         env:
           CLICKUP_TOKEN: ${{ secrets.CLICKUP_TOKEN }}
           CLICKUP_WORKSPACE_ID: ${{ secrets.CLICKUP_WORKSPACE_ID }}
-          INCLUDE_CLOSED: ${{ inputs.include_closed }}
-        run: python clickup_snapshot.py
+          INCLUDE_CLOSED: ${{ github.event.inputs.include_closed || 'true' }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_D1_DATABASE_ID: ${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: python scripts/clickup_snapshot.py
 
-      - name: Upload snapshot as artifact
+      - name: Upload snapshot artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: clickup-snapshot-${{ github.run_id }}
-          path: scripts/snapshot_output/
+          path: snapshot_output/
           retention-days: 30
-
-      # To add Slack notifications, add SLACK_BOT_TOKEN secret and uncomment:
-      # - name: Notify on Failure
-      #   if: failure()
-      #   uses: slackapi/slack-github-action@v1.25.0
-      #   with:
-      #     channel-id: 'YOUR_CHANNEL_ID'
-      #     payload: |
-      #       {"text": "🚨 ClickUp Snapshot FAILED: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}
-      #   env:
-      #     SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          compression-level: 0  # files are already gzip-compressed
