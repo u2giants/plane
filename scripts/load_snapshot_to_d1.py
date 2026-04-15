@@ -32,7 +32,7 @@ import urllib.error
 
 WORKSPACE_ID = "2298436"
 SOURCE = "snapshot"
-BATCH_SIZE = 25          # max statements per D1 /batch request
+D1_MAX_PARAMS = 90       # conservative bound-parameter limit per D1 /query call
 PROGRESS_EVERY = 500     # print progress every N rows
 
 ACCOUNT_ID = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "8303d11002766bf1cc36bf2f07ba6f20")
@@ -343,7 +343,12 @@ def _cf_request(endpoint: str, payload: dict, retry: int = 5) -> dict:
 
 
 def d1_query(sql: str, params: list) -> dict:
-    return _cf_request("query", {"sql": sql, "params": [str(p) if isinstance(p, int) and not isinstance(p, bool) else p for p in params]})
+    clean = [str(p) if isinstance(p, int) and not isinstance(p, bool) else p for p in params]
+    data = _cf_request("query", {"sql": sql, "params": clean})
+    if not data.get("success"):
+        errors = data.get("errors", ["(no error details)"])
+        raise RuntimeError(f"D1 query failed: {errors}\nSQL: {sql[:300]}")
+    return data
 
 
 def execute_batch(statements: list) -> None:
@@ -352,7 +357,8 @@ def execute_batch(statements: list) -> None:
 
     The D1 REST API only exposes /query (no /batch endpoint). To stay efficient
     we group consecutive statements that share the same SQL template into
-    multi-row INSERTs, collapsing N individual calls into ~N/BATCH_SIZE calls.
+    multi-row INSERTs. Chunk size is computed dynamically from column count to
+    stay under D1_MAX_PARAMS bound parameters per call.
     """
     if not statements:
         return
@@ -368,16 +374,20 @@ def execute_batch(statements: list) -> None:
             groups.append([sql, [params]])
 
     for sql_template, rows_params in groups:
-        # Split into chunks of BATCH_SIZE rows
-        for i in range(0, len(rows_params), BATCH_SIZE):
-            chunk = rows_params[i : i + BATCH_SIZE]
+        n_cols = sql_template.count("?")
+        chunk_size = max(1, D1_MAX_PARAMS // n_cols)
+        for i in range(0, len(rows_params), chunk_size):
+            chunk = rows_params[i : i + chunk_size]
             try:
-                _execute_multi_row(sql_template, chunk)
+                _execute_multi_row(sql_template, chunk, n_cols)
             except Exception as exc:
-                warnings.warn(f"execute_batch error (rows {i}–{i+len(chunk)-1}): {exc}")
+                warnings.warn(
+                    f"execute_batch error on rows {i}–{i+len(chunk)-1} "
+                    f"(n_cols={n_cols}, chunk={len(chunk)}): {exc}"
+                )
 
 
-def _execute_multi_row(sql_template: str, rows: list) -> None:
+def _execute_multi_row(sql_template: str, rows: list, n_cols: int = 0) -> None:
     """
     Combine multiple rows with the same INSERT template into a single
     multi-row INSERT and send one /query request.
@@ -391,24 +401,18 @@ def _execute_multi_row(sql_template: str, rows: list) -> None:
     if not rows:
         return
 
-    # Count placeholders in the template (one row's worth)
-    n_cols = sql_template.count("?")
+    if not n_cols:
+        n_cols = sql_template.count("?")
 
     if len(rows) == 1:
-        # No expansion needed
         d1_query(sql_template, rows[0])
         return
 
-    # Build the VALUES portion: repeat "(?, ?, ...)" for each row
     single_values = "(" + ", ".join(["?"] * n_cols) + ")"
     multi_values  = ", ".join([single_values] * len(rows))
-
-    # Replace the last VALUES (...) in the template
-    # Template ends with "VALUES (?, ?, ?)" — replace that suffix
     prefix = sql_template[:sql_template.rfind("VALUES")].rstrip()
     expanded_sql = f"{prefix} VALUES {multi_values}"
 
-    # Flatten params
     flat_params: list = []
     for row in rows:
         flat_params.extend(row)
