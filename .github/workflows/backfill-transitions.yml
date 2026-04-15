@@ -1,0 +1,97 @@
+name: Backfill Status Transitions
+
+on:
+  workflow_dispatch:
+    inputs:
+      fetch_history:
+        description: 'Also call ClickUp /task/{id}/history API (slow, hours)'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+      list_id:
+        description: 'Process only this list ID (leave blank for all)'
+        required: false
+        default: ''
+      run_id:
+        description: 'Snapshot run ID to use (default: latest successful)'
+        required: false
+        default: ''
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    name: Backfill status_transitions from snapshot + ClickUp history
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Resolve snapshot run ID
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          INPUT_RUN="${{ github.event.inputs.run_id }}"
+          if [ -n "$INPUT_RUN" ]; then
+            echo "run_id=$INPUT_RUN" >> $GITHUB_OUTPUT
+            echo "Using specified run ID: $INPUT_RUN"
+          else
+            RUN_ID=$(gh run list --repo ${{ github.repository }} \
+              --workflow clickup-snapshot.yml \
+              --status success \
+              --limit 1 \
+              --json databaseId \
+              --jq '.[0].databaseId')
+            echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
+            echo "Using latest snapshot run: $RUN_ID"
+          fi
+
+      - name: Download snapshot artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p scripts/snapshot_output
+          gh run download ${{ steps.resolve.outputs.run_id }} \
+            --repo ${{ github.repository }} \
+            --dir scripts/snapshot_output/
+          find scripts/snapshot_output -mindepth 2 -name "*.json.gz" \
+            -exec mv {} scripts/snapshot_output/ \;
+          find scripts/snapshot_output -mindepth 2 -name "_manifest.json" \
+            -exec mv {} scripts/snapshot_output/ \; 2>/dev/null || true
+          echo "Snapshot files:"
+          ls scripts/snapshot_output/ | grep tasks | head -30
+
+      - name: Run synthesized backfill
+        if: ${{ github.event.inputs.fetch_history != 'true' }}
+        working-directory: scripts
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_D1_DATABASE_ID: ${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          LIST_ARG=""
+          if [ -n "${{ github.event.inputs.list_id }}" ]; then
+            LIST_ARG="--list-id ${{ github.event.inputs.list_id }}"
+          fi
+          python fetch_task_activity.py $LIST_ARG
+
+      - name: Run synthesized + history backfill
+        if: ${{ github.event.inputs.fetch_history == 'true' }}
+        working-directory: scripts
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_D1_DATABASE_ID: ${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLICKUP_TOKEN: ${{ secrets.CLICKUP_TOKEN }}
+        run: |
+          LIST_ARG=""
+          if [ -n "${{ github.event.inputs.list_id }}" ]; then
+            LIST_ARG="--list-id ${{ github.event.inputs.list_id }}"
+          fi
+          python fetch_task_activity.py --fetch-history $LIST_ARG
