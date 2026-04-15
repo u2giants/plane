@@ -52,6 +52,7 @@ import urllib.error
 
 WORKSPACE_ID    = "2298436"
 CLICKUP_BASE    = "https://api.clickup.com/api/v2"
+CLICKUP_BASE_V3 = "https://api.clickup.com/api/v3"
 RATE_LIMIT      = 100          # ClickUp requests per minute
 RATE_WINDOW     = 60.0         # seconds
 CHECKPOINT_EVERY = 200         # tasks between checkpoints
@@ -325,10 +326,13 @@ def run_synthesized(list_id_filter: Optional[str]) -> int:
 
 def parse_history_items(task_id: str, list_id: str, space_id: Optional[str],
                          history: list) -> list:
-    """Convert ClickUp history_items to status_transitions rows."""
+    """Convert ClickUp history_items (v2 or v3) to status_transitions rows.
+    Items may carry a '_source' key set by probe_history_endpoint."""
     rows = []
     for item in history:
-        if item.get("field") != "status":
+        field  = item.get("field") or item.get("type") or ""
+        source = item.get("_source") or "api_history"
+        if field.lower() not in ("status", "task.status"):
             continue
         before = item.get("before") or {}
         after  = item.get("after")  or {}
@@ -345,27 +349,96 @@ def parse_history_items(task_id: str, list_id: str, space_id: Optional[str],
             space_id,
             WORKSPACE_ID,
             item.get("id"),
-            ms_to_iso(item.get("date")),
-            "api_history",
+            ms_to_iso(item.get("date") or item.get("timestamp")),
+            source,
+        ])
+    return rows
+
+
+def cu_get_v3(path: str, params: dict = None) -> dict:
+    """GET from ClickUp v3 API with rate limiting."""
+    _rl.wait()
+    url = f"{CLICKUP_BASE_V3}{path}"
+    if params:
+        qs  = "&".join(f"{k}={v}" for k, v in params.items())
+        url = f"{url}?{qs}"
+    req = urllib.request.Request(url, headers={"Authorization": CU_TOKEN})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        if exc.code == 429:
+            wait = int(exc.headers.get("Retry-After", "60"))
+            print(f"  [ClickUp v3 rate-limit] sleeping {wait}s")
+            time.sleep(wait)
+            return cu_get_v3(path, params)
+        raise RuntimeError(f"ClickUp v3 HTTP {exc.code}: {exc.read().decode()[:200]}") from exc
+
+
+def _parse_v3_activity(task_id: str, list_id: str, space_id: Optional[str],
+                        items: list) -> list:
+    """Convert ClickUp v3 activity items to status_transitions rows."""
+    rows = []
+    for item in items:
+        # v3 activity may use 'field' or 'type' for field name
+        field = item.get("field") or item.get("type") or ""
+        if field.lower() not in ("status", "task.status"):
+            continue
+        before = item.get("before") or item.get("from") or {}
+        after  = item.get("after")  or item.get("to")   or {}
+        user   = item.get("user")   or {}
+        rows.append([
+            task_id,
+            before.get("status") if isinstance(before, dict) else str(before),
+            after.get("status")  if isinstance(after,  dict) else str(after),
+            before.get("type")   if isinstance(before, dict) else None,
+            after.get("type")    if isinstance(after,  dict) else None,
+            str(user.get("id") or "") or None,
+            user.get("username") or user.get("email"),
+            list_id,
+            space_id,
+            WORKSPACE_ID,
+            item.get("id"),
+            ms_to_iso(item.get("date") or item.get("timestamp")),
+            "api_history_v3",
         ])
     return rows
 
 
 def probe_history_endpoint(task_id: str) -> Optional[list]:
     """
-    Try to fetch task history from ClickUp API.
-    Returns list of history items, or None if endpoint unavailable.
+    Try to fetch task history/activity from ClickUp API (v2 then v3).
+    Returns list of history items, or None if no endpoint is available.
+    Source tag is embedded in items via '_source' for caller to use.
     """
+    # --- Try v2 first ---
     try:
         resp = cu_get(f"/task/{task_id}/history")
-        # ClickUp may return {"history": [...]} or {"items": [...]}
         items = resp.get("history") or resp.get("items") or []
+        for item in items:
+            item["_source"] = "api_history"
         return items
     except RuntimeError as exc:
         msg = str(exc)
-        if "404" in msg or "400" in msg:
-            return None      # endpoint doesn't exist
-        raise
+        if "404" not in msg and "400" not in msg:
+            raise
+        # v2 not available, try v3
+
+    # --- Try v3 task activity endpoint ---
+    try:
+        resp = cu_get_v3(f"/task/{task_id}/activity")
+        items = resp.get("data") or resp.get("activity") or resp.get("items") or []
+        if items:
+            print(f"  [history] v3 /task/{task_id}/activity returned {len(items)} items")
+            for item in items:
+                item["_source"] = "api_history_v3"
+            return items
+    except RuntimeError as exc:
+        msg = str(exc)
+        if "404" not in msg and "400" not in msg and "403" not in msg:
+            raise
+
+    return None      # neither endpoint available
 
 
 def run_historical(list_id_filter: Optional[str]) -> int:
