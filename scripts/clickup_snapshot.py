@@ -435,6 +435,98 @@ def process_list_parallel(lid, list_name, space_id, manifest):
     return result
 
 # ---------------------------------------------------------------------------
+# Time tracking
+# ---------------------------------------------------------------------------
+
+def fetch_time_entries(days_back: int = 90) -> list:
+    """
+    Fetch time tracking entries for the whole workspace for the last `days_back` days.
+    Returns a flat list of entry dicts.
+    Endpoint: GET /team/{workspace_id}/time_entries
+    """
+    from datetime import timezone
+    now_ms  = int(datetime.now(timezone.utc).timestamp() * 1000)
+    start_ms = now_ms - days_back * 86_400_000
+
+    all_entries = []
+    page = 0
+    while True:
+        data = get(f"/team/{WORKSPACE}/time_entries", params={
+            "start_date": start_ms,
+            "end_date":   now_ms,
+            "page":       page,
+        })
+        if not data:
+            break
+        entries = data.get("data") or []
+        all_entries.extend(entries)
+        if len(entries) < 100:   # ClickUp returns up to 100 per page
+            break
+        page += 1
+
+    return all_entries
+
+
+def save_time_entries(entries: list) -> None:
+    """Save time entry artifact and write to D1 if enabled."""
+    if not entries:
+        print("  No time entries found.")
+        return
+
+    save_compressed({"entries": entries}, f"time_entries_{RUN_TS}.json.gz")
+    print(f"  Saved {len(entries)} time entries to time_entries_{RUN_TS}.json.gz")
+
+    if not D1_ENABLED:
+        return
+
+    rows = []
+    for e in entries:
+        task_obj  = e.get("task") or {}
+        user_obj  = e.get("user") or {}
+        start_ms  = e.get("start")
+        end_ms    = e.get("end")
+        dur_ms    = int(e.get("duration") or 0)
+        tags      = [t.get("name") for t in (e.get("tags") or []) if t.get("name")]
+
+        def _iso(ms_val):
+            if not ms_val:
+                return None
+            try:
+                return datetime.utcfromtimestamp(int(ms_val) / 1000).isoformat()
+            except Exception:
+                return None
+
+        rows.append({
+            "sql": (
+                "INSERT OR REPLACE INTO time_entries "
+                "(id, task_id, user_id, user_name, start_time, end_time, "
+                "duration_ms, duration_hrs, billable, description, tags, source) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?, 'snapshot')"
+            ),
+            "params": [
+                str(e.get("id") or ""),
+                str(task_obj.get("id") or "") or None,
+                str(user_obj.get("id") or "") or None,
+                user_obj.get("username") or user_obj.get("email"),
+                _iso(start_ms),
+                _iso(end_ms),
+                dur_ms,
+                round(dur_ms / 3_600_000, 3) if dur_ms else None,
+                1 if e.get("billable") else 0,
+                e.get("description"),
+                json.dumps(tags) if tags else None,
+            ],
+        })
+
+    # D1 batch
+    CHUNK = 10
+    for i in range(0, len(rows), CHUNK):
+        d1_batch(rows[i : i + CHUNK])
+
+    print(f"  D1: wrote {len(rows)} time entries")
+
+
+# ---------------------------------------------------------------------------
 # Workspace traversal helpers
 # ---------------------------------------------------------------------------
 def fetch_spaces():
@@ -542,6 +634,15 @@ def main():
     skipped = sum(1 for r in results if r.get("skipped"))
     errors = sum(1 for r in results if r.get("status") == "error")
     print(f"\n=== Snapshot complete: {done} done, {skipped} skipped, {errors} errors ===")
+
+    # Fetch workspace-level time tracking (last 90 days)
+    print("\n--- Fetching time tracking entries (last 90 days) ---")
+    try:
+        time_entries = fetch_time_entries(days_back=90)
+        print(f"  Retrieved {len(time_entries)} time entries")
+        save_time_entries(time_entries)
+    except Exception as exc:
+        print(f"  WARNING: time entries fetch failed: {exc}", file=sys.stderr)
 
 
 if __name__ == "__main__":
