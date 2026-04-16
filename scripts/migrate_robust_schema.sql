@@ -46,10 +46,15 @@ CREATE TABLE IF NOT EXISTS users (
   email         TEXT,
   color         TEXT,
   profile_url   TEXT,
+  role_id       INTEGER,   -- 1=owner 2=admin 3=member 4=viewer
+  role_name     TEXT,      -- "owner" | "admin" | "member" | "viewer"
+  date_joined   TEXT,      -- ISO timestamp of workspace join
+  last_active   TEXT,      -- ISO timestamp of last ClickUp activity
   fetched_at    TEXT DEFAULT (datetime('now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_users_workspace ON users(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_users_role      ON users(role_id);
 
 CREATE TABLE IF NOT EXISTS tasks (
   id              TEXT PRIMARY KEY,
@@ -290,6 +295,26 @@ CREATE INDEX IF NOT EXISTS idx_raw_task ON raw_events(task_id);
 CREATE INDEX IF NOT EXISTS idx_raw_time ON raw_events(received_at);
 
 -- ============================================
+-- PHASE 4b: Structured Business Entities
+-- Retailers and licensors as first-class rows,
+-- seeded from products data and maintained over time.
+-- ============================================
+
+CREATE TABLE IF NOT EXISTS retailers (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  name        TEXT NOT NULL UNIQUE,
+  notes       TEXT,
+  created_at  TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS licensors (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  name        TEXT NOT NULL UNIQUE,
+  notes       TEXT,
+  created_at  TEXT DEFAULT (datetime('now'))
+);
+
+-- ============================================
 -- PHASE 5: Business Context Reference
 -- ============================================
 
@@ -358,6 +383,9 @@ CREATE TABLE IF NOT EXISTS products (
   milestone_art_complete       INTEGER DEFAULT 0,
   milestone_pi_approved        INTEGER DEFAULT 0,
   milestone_tech_pack_checked  INTEGER DEFAULT 0,
+  concept_revisions        INTEGER DEFAULT 0,  -- # of "concept revision submitted" checklist rows
+  packaging_revisions      INTEGER DEFAULT 0,  -- # of "packaging concept revision submitted" rows
+  sample_rounds            INTEGER DEFAULT 0,  -- # of "sample submitted" checklist rows
   last_subtask_activity     TEXT,    -- updated_at of most recently touched subtask
   last_activity_at          TEXT,    -- max(updated_at, last_subtask_activity)
   is_active                 INTEGER DEFAULT 0,  -- 1 if last_activity_at within 180 days

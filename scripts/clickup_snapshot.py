@@ -435,6 +435,63 @@ def process_list_parallel(lid, list_name, space_id, manifest):
     return result
 
 # ---------------------------------------------------------------------------
+# Workspace members (roles)
+# ---------------------------------------------------------------------------
+
+ROLE_NAMES = {1: "owner", 2: "admin", 3: "member", 4: "viewer"}
+
+def fetch_workspace_members() -> list:
+    """
+    Fetch all workspace members and their roles.
+    Endpoint: GET /team/{workspace_id}/member
+    Returns list of member dicts.
+    """
+    data = get(f"/team/{WORKSPACE}/member")
+    if not data:
+        return []
+    return data.get("members", [])
+
+
+def save_workspace_members(members: list) -> None:
+    """Write members to D1 users table with role fields."""
+    if not members:
+        print("  No workspace members found.")
+        return
+    print(f"  Retrieved {len(members)} workspace members")
+
+    if not D1_ENABLED:
+        return
+
+    stmts = []
+    for m in members:
+        user_obj = m.get("user") or {}
+        role_id  = m.get("role")  # integer 1-4
+        stmts.append({
+            "sql": (
+                "INSERT OR REPLACE INTO users "
+                "(id, workspace_id, username, email, color, profile_url, "
+                "role_id, role_name, date_joined, last_active, fetched_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,datetime('now'))"
+            ),
+            "params": [
+                str(user_obj.get("id") or ""),
+                WORKSPACE,
+                user_obj.get("username"),
+                user_obj.get("email"),
+                user_obj.get("color"),
+                user_obj.get("profilePicture"),
+                role_id,
+                ROLE_NAMES.get(role_id),
+                ms_to_iso(m.get("date_joined")),
+                ms_to_iso(user_obj.get("last_active")),
+            ],
+        })
+
+    d1_batch(stmts)
+    print(f"  D1: wrote {len(stmts)} users")
+
+
+# ---------------------------------------------------------------------------
 # Time tracking
 # ---------------------------------------------------------------------------
 
@@ -634,6 +691,14 @@ def main():
     skipped = sum(1 for r in results if r.get("skipped"))
     errors = sum(1 for r in results if r.get("status") == "error")
     print(f"\n=== Snapshot complete: {done} done, {skipped} skipped, {errors} errors ===")
+
+    # Fetch workspace members (roles)
+    print("\n--- Fetching workspace members ---")
+    try:
+        members = fetch_workspace_members()
+        save_workspace_members(members)
+    except Exception as exc:
+        print(f"  WARNING: workspace members fetch failed: {exc}", file=sys.stderr)
 
     # Fetch workspace-level time tracking (last 90 days)
     print("\n--- Fetching time tracking entries (last 90 days) ---")

@@ -280,9 +280,10 @@ INSERT_PRODUCT = (
     "checklist_item_count, checklist_resolved_count, checklist_completion_pct, "
     "milestone_concept_approved, milestone_sample_approved, milestone_art_complete, "
     "milestone_pi_approved, milestone_tech_pack_checked, "
+    "concept_revisions, packaging_revisions, sample_rounds, "
     "last_subtask_activity, last_activity_at, is_active, "
     "refreshed_at) "
-    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
 )
 
 INSERT_PCHK = (
@@ -337,17 +338,33 @@ def build_products(
         n_items    = len(clist_items)
         n_resolved = sum(1 for ci in clist_items if ci.get("resolved"))
 
-        # --- Milestone flags from resolved checklist items ---
+        # --- Milestone flags + revision counts from checklist items ---
         mil_concept   = 0
         mil_sample    = 0
         mil_art       = 0
         mil_pi        = 0
         mil_tech_pack = 0
+        concept_revisions   = 0
+        packaging_revisions = 0
+        sample_rounds       = 0
 
         for ci in clist_items:
-            if not ci.get("resolved"):
-                continue
             step = classify_step(ci.get("name") or "")
+            resolved = bool(ci.get("resolved"))
+
+            # Revision counts: count ALL occurrences (resolved or not) since
+            # template-style unresolved items are rare for revision steps —
+            # a revision row only appears when a revision actually happened.
+            if step == "concept_revision_submitted":
+                concept_revisions += 1
+            elif step == "pkg_concept_revision":
+                packaging_revisions += 1
+            elif step == "sample_submitted":
+                sample_rounds += 1
+
+            # Milestone flags: only resolved items count
+            if not resolved:
+                continue
             if step in ("concept_approved", "group_concept_approved",
                         "packaging_concept_approved"):
                 mil_concept = 1
@@ -452,6 +469,9 @@ def build_products(
             mil_art,
             mil_pi,
             mil_tech_pack,
+            concept_revisions,
+            packaging_revisions,
+            sample_rounds,
             sub_last_ua,
             last_act,
             is_active,
