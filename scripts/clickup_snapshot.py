@@ -231,6 +231,7 @@ def d1_write_tasks(tasks, list_id, space_id):
         priority_obj = task.get("priority") or {}
         creator_obj = task.get("creator") or {}
 
+        task_id = task.get("id")
         stmts.append({
             "sql": (
                 "INSERT OR REPLACE INTO tasks "
@@ -240,7 +241,7 @@ def d1_write_tasks(tasks, list_id, space_id):
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'),?,?,?)"
             ),
             "params": [
-                task.get("id"),
+                task_id,
                 list_id,
                 task.get("parent"),
                 task.get("name"),
@@ -260,6 +261,34 @@ def d1_write_tasks(tasks, list_id, space_id):
                 licensor,
             ],
         })
+
+        # Assignees — upsert into users + task_assignments
+        for assignee in (task.get("assignees") or []):
+            uid = str(assignee.get("id") or "")
+            if not uid:
+                continue
+            cf_stmts.append({
+                "sql": (
+                    "INSERT OR REPLACE INTO users "
+                    "(id, workspace_id, username, email, color, profile_url, fetched_at) "
+                    "VALUES (?,?,?,?,?,?,datetime('now'))"
+                ),
+                "params": [
+                    uid, WORKSPACE,
+                    assignee.get("username"),
+                    assignee.get("email"),
+                    assignee.get("color"),
+                    assignee.get("profilePicture"),
+                ],
+            })
+            cf_stmts.append({
+                "sql": (
+                    "INSERT OR REPLACE INTO task_assignments "
+                    "(task_id, user_id, assigned_at, is_current, source) "
+                    "VALUES (?,?,datetime('now'),1,'snapshot')"
+                ),
+                "params": [task_id, uid],
+            })
 
         # Custom fields per task
         for cf in cfs:
@@ -331,14 +360,15 @@ def d1_write_comments(all_comments):
             stmts.append({
                 "sql": (
                     "INSERT OR REPLACE INTO task_comments "
-                    "(id, task_id, comment_text, user_id, date) "
-                    "VALUES (?,?,?,?,?)"
+                    "(id, task_id, content, user_id, user_name, created_at, source) "
+                    "VALUES (?,?,?,?,?,?,'snapshot')"
                 ),
                 "params": [
                     c.get("id"),
                     task_id,
                     text,
                     str(user_obj.get("id", "")) or None,
+                    user_obj.get("username"),
                     ms_to_iso(c.get("date")),
                 ],
             })

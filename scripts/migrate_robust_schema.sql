@@ -370,9 +370,12 @@ CREATE TABLE IF NOT EXISTS products (
   closed_at                 TEXT,
   due_date                  TEXT,
   start_date                TEXT,
-  days_in_current_status    REAL,
-  days_in_pipeline          REAL,
+  days_since_last_update    REAL,    -- days since updated_at (renamed from days_in_current_status)
+  days_in_pipeline          REAL,    -- days since created_at
   creator_id                TEXT,
+  priority                  TEXT,    -- "urgent" | "high" | "normal" | "low" | NULL
+  assignee_count            INTEGER DEFAULT 0,
+  assignee_ids              TEXT,    -- JSON array of user ID strings
   subtask_count             INTEGER DEFAULT 0,
   subtask_closed_count      INTEGER DEFAULT 0,
   checklist_item_count      INTEGER DEFAULT 0,
@@ -386,10 +389,16 @@ CREATE TABLE IF NOT EXISTS products (
   concept_revisions        INTEGER DEFAULT 0,  -- # of "concept revision submitted" checklist rows
   packaging_revisions      INTEGER DEFAULT 0,  -- # of "packaging concept revision submitted" rows
   sample_rounds            INTEGER DEFAULT 0,  -- # of "sample submitted" checklist rows
-  last_subtask_activity     TEXT,    -- updated_at of most recently touched subtask
-  last_activity_at          TEXT,    -- max(updated_at, last_subtask_activity)
-  is_active                 INTEGER DEFAULT 0,  -- 1 if last_activity_at within 180 days
-  refreshed_at              TEXT DEFAULT (datetime('now'))
+  is_overdue               INTEGER DEFAULT 0,  -- 1 if due_date past and product not closed
+  days_overdue             REAL,               -- days past due (NULL if not overdue)
+  last_subtask_activity    TEXT,    -- updated_at of most recently touched subtask
+  last_activity_at         TEXT,    -- max(updated_at, last_subtask_activity)
+  is_active                INTEGER DEFAULT 0,  -- 1 if last_activity_at within 180 days
+  is_internal              INTEGER DEFAULT 0,  -- 1 for non-product spaces (e.g. designflow)
+  comment_approvals        INTEGER DEFAULT 0,  -- comments with approval-language keywords
+  comment_revisions        INTEGER DEFAULT 0,  -- comments with revision-request keywords
+  comment_rejections       INTEGER DEFAULT 0,  -- comments with rejection keywords
+  refreshed_at             TEXT DEFAULT (datetime('now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_products_licensor  ON products(licensor);
@@ -397,6 +406,9 @@ CREATE INDEX IF NOT EXISTS idx_products_retailer  ON products(retailer);
 CREATE INDEX IF NOT EXISTS idx_products_stage     ON products(stage_order);
 CREATE INDEX IF NOT EXISTS idx_products_status    ON products(status_type);
 CREATE INDEX IF NOT EXISTS idx_products_space     ON products(space_id);
+CREATE INDEX IF NOT EXISTS idx_products_active    ON products(is_active);
+CREATE INDEX IF NOT EXISTS idx_products_internal  ON products(is_internal);
+CREATE INDEX IF NOT EXISTS idx_products_overdue   ON products(is_overdue);
 
 -- Checklist items linked back to their parent product with step classification.
 -- Rebuilt nightly by build_products_table.py alongside the products table.
@@ -576,6 +588,42 @@ SELECT
 FROM time_entries te
 LEFT JOIN products p ON p.id = te.task_id
 GROUP BY te.task_id;
+
+-- Active products overdue summary — quick dashboard query
+CREATE VIEW IF NOT EXISTS overdue_products AS
+SELECT
+  p.id,
+  p.name,
+  p.licensor,
+  p.retailer,
+  p.stage_name,
+  p.stage_category,
+  p.due_date,
+  p.days_overdue,
+  p.priority,
+  p.assignee_ids,
+  p.space_name
+FROM products p
+WHERE p.is_overdue = 1
+  AND p.is_internal = 0
+  AND p.status_type != 'closed'
+ORDER BY p.days_overdue DESC;
+
+-- Comment signal summary — which products have the most implicit process events in comments
+CREATE VIEW IF NOT EXISTS comment_signals AS
+SELECT
+  p.id,
+  p.name,
+  p.licensor,
+  p.stage_name,
+  p.comment_approvals,
+  p.comment_revisions,
+  p.comment_rejections,
+  p.comment_approvals + p.comment_revisions + p.comment_rejections AS total_signals
+FROM products p
+WHERE p.is_internal = 0
+  AND (p.comment_approvals > 0 OR p.comment_revisions > 0 OR p.comment_rejections > 0)
+ORDER BY total_signals DESC;
 
 -- ============================================
 -- VERIFICATION
