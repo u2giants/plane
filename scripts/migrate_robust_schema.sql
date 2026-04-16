@@ -358,6 +358,9 @@ CREATE TABLE IF NOT EXISTS products (
   milestone_art_complete       INTEGER DEFAULT 0,
   milestone_pi_approved        INTEGER DEFAULT 0,
   milestone_tech_pack_checked  INTEGER DEFAULT 0,
+  last_subtask_activity     TEXT,    -- updated_at of most recently touched subtask
+  last_activity_at          TEXT,    -- max(updated_at, last_subtask_activity)
+  is_active                 INTEGER DEFAULT 0,  -- 1 if last_activity_at within 180 days
   refreshed_at              TEXT DEFAULT (datetime('now'))
 );
 
