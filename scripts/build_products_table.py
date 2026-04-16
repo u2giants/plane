@@ -266,6 +266,8 @@ def get_cf(cf_map: dict, task_id: str, *field_names) -> Optional[str]:
 # Core build
 # ---------------------------------------------------------------------------
 
+ACTIVE_DAYS = 180   # products touched within this window are considered active
+
 INSERT_PRODUCT = (
     "INSERT OR REPLACE INTO products "
     "(id, name, licensor, retailer, product_category, put_up, factory, buyer, "
@@ -278,8 +280,9 @@ INSERT_PRODUCT = (
     "checklist_item_count, checklist_resolved_count, checklist_completion_pct, "
     "milestone_concept_approved, milestone_sample_approved, milestone_art_complete, "
     "milestone_pi_approved, milestone_tech_pack_checked, "
+    "last_subtask_activity, last_activity_at, is_active, "
     "refreshed_at) "
-    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
 )
 
 INSERT_PCHK = (
@@ -302,15 +305,21 @@ def build_products(
     """
     now_iso = datetime.now(timezone.utc).isoformat()
 
-    # Build subtask counts per parent
-    subtask_counts: dict  = {}
-    subtask_closed: dict  = {}
+    # Build subtask counts and most-recent subtask activity per parent
+    subtask_counts: dict   = {}
+    subtask_closed: dict   = {}
+    subtask_last_act: dict = {}   # parent_id → most recent subtask updated_at (ISO str)
     for task in tasks.values():
         pid = task.get("parent_task_id")
         if pid:
             subtask_counts[pid] = subtask_counts.get(pid, 0) + 1
             if task.get("status_type") == "closed":
                 subtask_closed[pid] = subtask_closed.get(pid, 0) + 1
+            sub_ua = task.get("updated_at")
+            if sub_ua:
+                prev = subtask_last_act.get(pid)
+                if prev is None or sub_ua > prev:
+                    subtask_last_act[pid] = sub_ua
 
     product_rows    = []
     checkpoint_rows = []
@@ -394,6 +403,16 @@ def build_products(
         sub_closed = subtask_closed.get(tid, 0)
         pct        = round(n_resolved / n_items * 100, 1) if n_items else None
 
+        # Activity: max of parent updated_at and most recent subtask updated_at
+        parent_ua    = task.get("updated_at")
+        sub_last_ua  = subtask_last_act.get(tid)
+        last_act     = max(
+            filter(None, [parent_ua, sub_last_ua]),
+            default=None,
+        )
+        is_active = 1 if (days_since(last_act) is not None
+                          and days_since(last_act) < ACTIVE_DAYS) else 0
+
         product_rows.append([
             tid,
             task.get("name"),
@@ -433,6 +452,9 @@ def build_products(
             mil_art,
             mil_pi,
             mil_tech_pack,
+            sub_last_ua,
+            last_act,
+            is_active,
             now_iso,
         ])
 
@@ -484,33 +506,17 @@ def main() -> None:
     # Quick sanity summary
     print("\n=== Summary ===")
     summary = d1_query(
-        "SELECT stage_category, COUNT(*) as cnt, "
-        "ROUND(AVG(days_in_pipeline),0) as avg_days_in_pipeline "
+        "SELECT stage_category, "
+        "COUNT(*) as total, "
+        "SUM(is_active) as active_180d, "
+        "ROUND(AVG(CASE WHEN is_active=1 THEN days_in_pipeline END),0) as avg_days_in_pipeline "
         "FROM products WHERE status_type != 'closed' "
         "GROUP BY stage_category ORDER BY MIN(stage_order)"
     )
     for r in summary:
         print(f"  {(r['stage_category'] or 'Unknown'):20s}  "
-              f"{r['cnt']:>5} products   "
-              f"avg {r['avg_days_in_pipeline'] or '?':>6} days in pipeline")
-
-    milestone_stats = d1_query(
-        "SELECT "
-        "  SUM(milestone_concept_approved) as concept_approved, "
-        "  SUM(milestone_sample_approved)  as sample_approved, "
-        "  SUM(milestone_art_complete)     as art_complete, "
-        "  SUM(milestone_pi_approved)      as pi_approved, "
-        "  COUNT(*) as total "
-        "FROM products WHERE status_type != 'closed'"
-    )
-    if milestone_stats:
-        r = milestone_stats[0]
-        tot = r["total"] or 1
-        print(f"\n  Active products with milestone reached (of {tot:,} active):")
-        print(f"    Concept approved : {r['concept_approved']:>5,}")
-        print(f"    Sample approved  : {r['sample_approved']:>5,}")
-        print(f"    Art complete     : {r['art_complete']:>5,}")
-        print(f"    PI approved      : {r['pi_approved']:>5,}")
+              f"{r['active_180d']:>4}/{r['total']:>5} active   "
+              f"avg {r['avg_days_in_pipeline'] or '?':>5} days in pipeline")
 
     elapsed = (datetime.now(timezone.utc) - t0).total_seconds()
     print(f"\n=== Done in {elapsed:.0f}s ===")
