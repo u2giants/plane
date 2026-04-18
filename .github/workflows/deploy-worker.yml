@@ -33,21 +33,36 @@ jobs:
           if [ -n "$WEBHOOK_SECRET" ]; then
             echo "$WEBHOOK_SECRET" | wrangler secret put CLICKUP_WEBHOOK_SECRET
           else
-            echo "CLICKUP_WEBHOOK_SECRET not set — skipping (will set after ClickUp webhook registration)"
+            echo "CLICKUP_WEBHOOK_SECRET not set — skipping"
+          fi
+
+      - name: Set ANTHROPIC_API_KEY
+        working-directory: integrations/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            echo "$ANTHROPIC_API_KEY" | wrangler secret put ANTHROPIC_API_KEY
+            echo "✓ ANTHROPIC_API_KEY set on Worker"
+          else
+            echo "ANTHROPIC_API_KEY not set — /query endpoint will return 500 until added"
+          fi
+
+      - name: Set QUERY_SECRET
+        working-directory: integrations/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          QUERY_SECRET: ${{ secrets.QUERY_SECRET }}
+        run: |
+          if [ -n "$QUERY_SECRET" ]; then
+            echo "$QUERY_SECRET" | wrangler secret put QUERY_SECRET
+            echo "✓ QUERY_SECRET set — /query endpoint is bearer-token protected"
+          else
+            echo "QUERY_SECRET not set — /query endpoint is open (anyone with the URL can query)"
           fi
 
       - name: Health Check
         run: |
           sleep 3
           curl -s https://plane-integrations.u2giants.workers.dev/health | grep -q "ok" && echo "✓ Worker healthy" || exit 1
-
-      # To add Slack notifications, add SLACK_BOT_TOKEN secret and uncomment:
-      # - name: Notify on Failure
-      #   if: failure()
-      #   uses: slackapi/slack-github-action@v1.25.0
-      #   with:
-      #     channel-id: 'YOUR_CHANNEL_ID'
-      #     payload: |
-      #       {"text": "🚨 Worker deployment FAILED: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}
-      #   env:
-      #     SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
