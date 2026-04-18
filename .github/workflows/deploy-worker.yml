@@ -36,17 +36,17 @@ jobs:
             echo "CLICKUP_WEBHOOK_SECRET not set — skipping"
           fi
 
-      - name: Set ANTHROPIC_API_KEY
+      - name: Set OPENROUTER_API_KEY
         working-directory: integrations/worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
-          if [ -n "$ANTHROPIC_API_KEY" ]; then
-            echo "$ANTHROPIC_API_KEY" | wrangler secret put ANTHROPIC_API_KEY
-            echo "✓ ANTHROPIC_API_KEY set on Worker"
+          if [ -n "$OPENROUTER_API_KEY" ]; then
+            echo "$OPENROUTER_API_KEY" | wrangler secret put OPENROUTER_API_KEY
+            echo "✓ OPENROUTER_API_KEY set on Worker"
           else
-            echo "ANTHROPIC_API_KEY not set — /query endpoint will return 500 until added"
+            echo "OPENROUTER_API_KEY not set — /query endpoint will return 500 until added"
           fi
 
       - name: Set QUERY_SECRET

@@ -107,6 +107,9 @@ Be specific: include exact numbers, names, and percentages from the data.
 If the result is empty, say clearly that no matching products were found.
 Do not mention SQL or databases. Speak as if you know the business.`.trim();
 
+const OPENROUTER_MODEL = 'google/gemini-2.0-flash-lite';
+const OPENROUTER_URL   = 'https://openrouter.ai/api/v1/chat/completions';
+
 // ---------------------------------------------------------------------------
 // Known licensors for path extraction
 // ---------------------------------------------------------------------------
@@ -171,15 +174,15 @@ async function handleAIQuery(request, env) {
     return json({ error: 'question field is required' }, 400);
   }
 
-  const apiKey = env.ANTHROPIC_API_KEY || '';
+  const apiKey = env.OPENROUTER_API_KEY || '';
   if (!apiKey) {
-    return json({ error: 'ANTHROPIC_API_KEY not configured on this Worker' }, 500);
+    return json({ error: 'OPENROUTER_API_KEY not configured on this Worker' }, 500);
   }
 
   // Step 1 — generate SQL
   let sql;
   try {
-    const raw = await callClaude(apiKey, SCHEMA_CONTEXT, question, 512);
+    const raw = await callLLM(apiKey, SCHEMA_CONTEXT, question, 512);
     sql = cleanSQL(raw);
   } catch (err) {
     return json({ error: 'Claude API error (SQL generation)', message: err.message }, 502);
@@ -209,7 +212,7 @@ async function handleAIQuery(request, env) {
         ? 'The query returned no rows.'
         : JSON.stringify(rows.slice(0, 30));
       const formatPrompt = `Question: "${question}"\n\nSQL used:\n${sql}\n\nResult (${rows.length} total rows):\n${rowSummary}`;
-      answer = await callClaude(apiKey, FORMAT_CONTEXT, formatPrompt, 512);
+      answer = await callLLM(apiKey, FORMAT_CONTEXT, formatPrompt, 512);
     } catch (err) {
       answer = `Query returned ${rows.length} row(s) but formatting failed: ${err.message}`;
     }
@@ -226,32 +229,34 @@ async function handleAIQuery(request, env) {
 }
 
 // ---------------------------------------------------------------------------
-// Claude API helper
+// LLM helper — OpenRouter (OpenAI-compatible)
 // ---------------------------------------------------------------------------
 
-async function callClaude(apiKey, systemPrompt, userMessage, maxTokens = 512) {
-  const resp = await fetch('https://api.anthropic.com/v1/messages', {
+async function callLLM(apiKey, systemPrompt, userMessage, maxTokens = 512) {
+  const resp = await fetch(OPENROUTER_URL, {
     method: 'POST',
     headers: {
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+      'HTTP-Referer': 'https://plane-integrations.u2giants.workers.dev',
     },
     body: JSON.stringify({
-      model: 'claude-haiku-4-5-20251001',
+      model: OPENROUTER_MODEL,
       max_tokens: maxTokens,
-      system: systemPrompt,
-      messages: [{ role: 'user', content: userMessage }],
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user',   content: userMessage  },
+      ],
     }),
   });
 
   if (!resp.ok) {
     const errText = await resp.text();
-    throw new Error(`Anthropic API ${resp.status}: ${errText.slice(0, 200)}`);
+    throw new Error(`OpenRouter ${resp.status}: ${errText.slice(0, 200)}`);
   }
 
   const data = await resp.json();
-  return data.content?.[0]?.text?.trim() || '';
+  return data.choices?.[0]?.message?.content?.trim() || '';
 }
 
 function cleanSQL(text) {
