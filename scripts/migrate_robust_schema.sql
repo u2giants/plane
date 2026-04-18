@@ -503,7 +503,7 @@ SELECT
   t.priority,
   t.creator_id,
   t.workspace_id,
-  ROUND((julianday('now') - julianday(t.updated_at)), 1)          AS days_in_current_status,
+  ROUND((julianday('now') - julianday(t.updated_at)), 1)          AS days_since_last_update,
   MAX(CASE WHEN cf.field_name IN ('🧑‍✈ Customer / Retailer','customer') THEN cf.value_text END) AS retailer,
   MAX(CASE WHEN cf.field_name = '📚 Category'    THEN cf.value_text END) AS product_category,
   MAX(CASE WHEN cf.field_name = 'put-up'         THEN cf.value_text END) AS put_up,
@@ -588,6 +588,74 @@ SELECT
 FROM time_entries te
 LEFT JOIN products p ON p.id = te.task_id
 GROUP BY te.task_id;
+
+-- Product journey — resolved checkpoints per product in chronological order.
+-- Answers: "what steps has this product completed, and when?"
+CREATE VIEW IF NOT EXISTS product_journey AS
+SELECT
+  pc.product_id,
+  p.name          AS product_name,
+  p.licensor,
+  p.retailer,
+  p.space_name,
+  p.stage_name    AS current_stage,
+  pc.step_id,
+  cm.step_name,
+  cm.step_order,
+  cm.step_category,
+  pc.resolved_at,
+  pc.resolved_by,
+  ROW_NUMBER() OVER (PARTITION BY pc.product_id ORDER BY pc.resolved_at) AS sequence
+FROM product_checkpoints pc
+JOIN products p ON p.id = pc.product_id
+LEFT JOIN checkpoint_map cm ON cm.step_id = pc.step_id
+WHERE pc.resolved = 1
+  AND pc.resolved_at IS NOT NULL
+  AND p.is_internal = 0
+ORDER BY pc.product_id, pc.resolved_at;
+
+-- Stalled products — active but no movement in 30+ days.
+-- These are the products quietly sitting in limbo: not overdue, not dormant, just stuck.
+CREATE VIEW IF NOT EXISTS stalled_products AS
+SELECT
+  id, name, licensor, retailer, space_name,
+  stage_name, stage_category, stage_order,
+  days_since_last_update, days_in_pipeline,
+  priority, assignee_count, assignee_ids,
+  checklist_completion_pct,
+  due_date, last_activity_at
+FROM products
+WHERE is_active  = 1
+  AND is_internal = 0
+  AND status_type != 'closed'
+  AND days_since_last_update > 30
+ORDER BY days_since_last_update DESC;
+
+-- Checkpoint velocity — how long it takes products to reach each process step.
+-- Answers: "on average, how many days from creation until concept is approved?"
+-- NOTE: requires resolved_at data in product_checkpoints (populated from checklist items).
+CREATE VIEW IF NOT EXISTS checkpoint_velocity AS
+SELECT
+  cm.step_id,
+  cm.step_name,
+  cm.step_order,
+  cm.step_category,
+  COUNT(pc.item_id)                                                          AS times_completed,
+  ROUND(AVG(JULIANDAY(pc.resolved_at) - JULIANDAY(p.created_at)), 1)       AS avg_days_from_creation,
+  ROUND(MIN(JULIANDAY(pc.resolved_at) - JULIANDAY(p.created_at)), 1)       AS fastest_days,
+  ROUND(MAX(JULIANDAY(pc.resolved_at) - JULIANDAY(p.created_at)), 1)       AS slowest_days,
+  ROUND(
+    (AVG(JULIANDAY(pc.resolved_at) - JULIANDAY(p.created_at)) -
+     MIN(JULIANDAY(pc.resolved_at) - JULIANDAY(p.created_at))), 1
+  )                                                                          AS spread_days
+FROM product_checkpoints pc
+JOIN products p  ON p.id  = pc.product_id
+JOIN checkpoint_map cm ON cm.step_id = pc.step_id
+WHERE pc.resolved = 1
+  AND pc.resolved_at IS NOT NULL
+  AND p.is_internal = 0
+GROUP BY cm.step_id
+ORDER BY cm.step_order;
 
 -- Active products overdue summary — quick dashboard query
 CREATE VIEW IF NOT EXISTS overdue_products AS
