@@ -107,7 +107,7 @@ Be specific: include exact numbers, names, and percentages from the data.
 If the result is empty, say clearly that no matching products were found.
 Do not mention SQL or databases. Speak as if you know the business.`.trim();
 
-const OPENROUTER_MODEL = 'google/gemini-2.5-flash';
+const OPENROUTER_MODEL = 'deepseek/deepseek-v3.2';
 const OPENROUTER_URL   = 'https://openrouter.ai/api/v1/chat/completions';
 
 // ---------------------------------------------------------------------------
