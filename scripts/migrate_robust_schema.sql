@@ -141,10 +141,12 @@ CREATE TABLE IF NOT EXISTS task_comments (
   fetched_at       TEXT DEFAULT (datetime('now')),
   source           TEXT DEFAULT 'webhook',
   file_paths       TEXT,
-  licensor_hint    TEXT
+  licensor_hint    TEXT,
+  comment_driver   TEXT    -- 'licensor' | 'factory' | 'retailer' | NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_comment_task ON task_comments(task_id);
+CREATE INDEX IF NOT EXISTS idx_comment_task   ON task_comments(task_id);
+CREATE INDEX IF NOT EXISTS idx_comment_driver ON task_comments(comment_driver);
 CREATE INDEX IF NOT EXISTS idx_comment_user ON task_comments(user_id);
 CREATE INDEX IF NOT EXISTS idx_comment_time ON task_comments(created_at);
 
@@ -723,6 +725,56 @@ FROM products p
 WHERE p.is_internal = 0
   AND (p.comment_approvals > 0 OR p.comment_revisions > 0 OR p.comment_rejections > 0)
 ORDER BY total_signals DESC;
+
+-- Comment driver breakdown per product — who is driving revisions externally?
+-- Rows only for products that have at least one classified comment.
+CREATE VIEW IF NOT EXISTS comment_drivers AS
+SELECT
+  tc.task_id                                       AS product_id,
+  p.name,
+  p.licensor,
+  p.stage_name,
+  COUNT(*)                                         AS total_comments,
+  SUM(CASE WHEN tc.comment_driver = 'licensor'  THEN 1 ELSE 0 END) AS licensor_comments,
+  SUM(CASE WHEN tc.comment_driver = 'factory'   THEN 1 ELSE 0 END) AS factory_comments,
+  SUM(CASE WHEN tc.comment_driver = 'retailer'  THEN 1 ELSE 0 END) AS retailer_comments
+FROM task_comments tc
+JOIN products p ON p.id = tc.task_id
+WHERE tc.comment_driver IS NOT NULL
+  AND p.is_internal = 0
+GROUP BY tc.task_id
+ORDER BY total_comments DESC;
+
+-- Tag usage — which tags are applied and how widely?
+CREATE VIEW IF NOT EXISTS tag_usage AS
+SELECT
+  tt.tag_name,
+  COUNT(DISTINCT tt.task_id)                               AS task_count,
+  COUNT(DISTINCT p.id)                                     AS product_count,
+  ROUND(100.0 * COUNT(DISTINCT p.id) /
+    (SELECT COUNT(*) FROM products WHERE is_internal = 0), 1) AS pct_of_products
+FROM task_tags tt
+LEFT JOIN products p ON p.id = tt.task_id AND p.is_internal = 0
+GROUP BY tt.tag_name
+ORDER BY product_count DESC;
+
+-- Task dependency map — what is blocking what?
+-- Links tasks that are waiting on other tasks to complete.
+CREATE VIEW IF NOT EXISTS task_dependency_map AS
+SELECT
+  tl.task_id,
+  t1.name                   AS task_name,
+  t1.status                 AS task_status,
+  tl.linked_task_id         AS depends_on_id,
+  t2.name                   AS depends_on_name,
+  t2.status                 AS depends_on_status,
+  t2.status_type            AS depends_on_status_type,
+  tl.link_direction,
+  tl.link_type
+FROM task_links tl
+JOIN tasks t1 ON t1.id = tl.task_id
+JOIN tasks t2 ON t2.id = tl.linked_task_id
+ORDER BY tl.link_type, t1.name;
 
 -- ============================================
 -- VERIFICATION

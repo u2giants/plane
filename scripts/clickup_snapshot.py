@@ -50,6 +50,50 @@ KNOWN_LICENSORS = [
 ]
 
 # ---------------------------------------------------------------------------
+# Comment driver classification
+# Who is driving a comment — licensor, factory, retailer, or unknown (None).
+# Checked against lowercased comment text. First match wins.
+# ---------------------------------------------------------------------------
+LICENSOR_KW = [
+    "per licensor", "licensor says", "licensor wants", "licensor feedback",
+    "licensor requires", "licensor approved", "licensor rejected", "licensor comment",
+    "licensor notes", "per the licensor", "ip approved", "ip rejected", "ip notes",
+    "brand approved", "brand rejected", "brand feedback", "brand says", "brand notes",
+    "per disney", "disney approved", "disney rejected", "disney wants", "disney feedback",
+    "per marvel", "marvel approved", "marvel rejected",
+    "per wb", "per warner", "warner approved", "warner rejected",
+    "per peanuts", "per sega", "per nickelodeon", "per wwe",
+    "per strawberry", "per care bears", "per sanrio",
+]
+FACTORY_KW = [
+    "factory says", "factory confirmed", "factory feedback", "factory notes",
+    "factory issue", "from the factory", "from factory", "factory approved",
+    "factory rejected", "vendor says", "supplier says", "vendor feedback",
+    "production issue", "qc issue", "quality issue", "sample quality",
+]
+RETAILER_KW = [
+    "buyer says", "buyer wants", "buyer feedback", "buyer notes",
+    "per the buyer", "per buyer", "buyer approved", "buyer confirmed",
+    "customer feedback", "customer wants", "retailer feedback",
+    "per burlington", "per ross", "per walmart", "per target",
+    "per tjx", "per tj maxx", "per five below",
+]
+
+
+def classify_comment_driver(text: str):
+    """Return 'licensor', 'factory', 'retailer', or None based on comment content."""
+    if not text:
+        return None
+    lower = text.lower()
+    if any(kw in lower for kw in LICENSOR_KW):
+        return "licensor"
+    if any(kw in lower for kw in FACTORY_KW):
+        return "factory"
+    if any(kw in lower for kw in RETAILER_KW):
+        return "retailer"
+    return None
+
+# ---------------------------------------------------------------------------
 # Manifest (resume capability)
 # ---------------------------------------------------------------------------
 manifest_lock = Lock()
@@ -340,6 +384,74 @@ def d1_write_tasks(tasks, list_id, space_id):
     if cf_stmts:
         d1_batch(cf_stmts)
 
+    # Tags
+    tag_stmts = []
+    for task in tasks:
+        task_id = task.get("id")
+        for tag in (task.get("tags") or []):
+            tag_name = tag.get("name") or ""
+            if not tag_name:
+                continue
+            # ClickUp tags have no stable id — use name as the key
+            tag_stmts.append({
+                "sql": (
+                    "INSERT OR REPLACE INTO task_tags "
+                    "(task_id, tag_id, tag_name) "
+                    "VALUES (?,?,?)"
+                ),
+                "params": [task_id, tag_name.lower().strip(), tag_name],
+            })
+    if tag_stmts:
+        d1_batch(tag_stmts)
+
+    # Links (linked_tasks) and dependencies
+    link_stmts = []
+    for task in tasks:
+        task_id = task.get("id")
+        for link in (task.get("linked_tasks") or []):
+            link_id      = str(link.get("link_id") or link.get("id") or "")
+            linked_tid   = str(link.get("task_id") or "")
+            created_by   = str(link.get("userid") or "")
+            created_at   = ms_to_iso(link.get("date_created"))
+            if not linked_tid:
+                continue
+            link_stmts.append({
+                "sql": (
+                    "INSERT OR IGNORE INTO task_links "
+                    "(id, task_id, linked_task_id, link_direction, link_type, "
+                    "created_by, created_at, source) "
+                    "VALUES (?,?,?,?,?,?,?,'snapshot')"
+                ),
+                "params": [
+                    link_id or f"{task_id}_{linked_tid}",
+                    task_id, linked_tid, "bidirectional", "linked",
+                    created_by or None, created_at,
+                ],
+            })
+        for dep in (task.get("dependencies") or []):
+            dep_on      = str(dep.get("depends_on") or dep.get("task_id") or "")
+            dep_type    = dep.get("type", "0")
+            created_by  = str(dep.get("userid") or "")
+            created_at  = ms_to_iso(dep.get("date_created"))
+            direction   = "waiting_on" if dep_type == "0" else "blocking"
+            dep_id      = f"dep_{task_id}_{dep_on}"
+            if not dep_on:
+                continue
+            link_stmts.append({
+                "sql": (
+                    "INSERT OR IGNORE INTO task_links "
+                    "(id, task_id, linked_task_id, link_direction, link_type, "
+                    "created_by, created_at, source) "
+                    "VALUES (?,?,?,?,?,?,?,'snapshot')"
+                ),
+                "params": [
+                    dep_id, task_id, dep_on, direction, "dependency",
+                    created_by or None, created_at,
+                ],
+            })
+    if link_stmts:
+        d1_batch(link_stmts)
+
 # ---------------------------------------------------------------------------
 # D1 — write comments for a list
 # ---------------------------------------------------------------------------
@@ -357,11 +469,13 @@ def d1_write_comments(all_comments):
                     (block.get("text") or "") for block in text if isinstance(block, dict)
                 )
             user_obj = c.get("user") or {}
+            driver = classify_comment_driver(text)
             stmts.append({
                 "sql": (
                     "INSERT OR REPLACE INTO task_comments "
-                    "(id, task_id, content, user_id, user_name, created_at, source) "
-                    "VALUES (?,?,?,?,?,?,'snapshot')"
+                    "(id, task_id, content, user_id, user_name, created_at, "
+                    "comment_driver, source) "
+                    "VALUES (?,?,?,?,?,?,?,'snapshot')"
                 ),
                 "params": [
                     c.get("id"),
@@ -370,6 +484,7 @@ def d1_write_comments(all_comments):
                     str(user_obj.get("id", "")) or None,
                     user_obj.get("username"),
                     ms_to_iso(c.get("date")),
+                    driver,
                 ],
             })
     d1_batch(stmts)

@@ -66,7 +66,7 @@ product_checkpoints(product_id, step_id, raw_name, resolved INTEGER, resolved_at
   — every checklist item on every product, classified by step_id
 
 checkpoint_map(step_id TEXT PK, step_name, step_order INTEGER, step_category)
-  — 21 process steps defining the workflow
+  — 27 process steps defining the workflow
 
 workflow_stages(status_raw TEXT PK, stage_order, stage_name, stage_category)
   — maps ClickUp status strings to pipeline stages
@@ -74,8 +74,14 @@ workflow_stages(status_raw TEXT PK, stage_order, stage_name, stage_category)
 users(id TEXT PK, username, email, role_name)
   — workspace members; join on assignee_ids JSON or status_transitions.user_id
 
-licensors(id, name)   — structured licensor entities
-retailers(id, name)   — structured retailer entities
+task_tags(task_id, tag_name)
+  — tags applied to tasks in ClickUp; use to find categorized/flagged products
+
+task_links(task_id, linked_task_id, link_direction, link_type)
+  — linked tasks and dependencies between tasks (link_type: 'linked' or 'dependency')
+
+task_comments(id, task_id, content, user_id, user_name, comment_driver, created_at)
+  — all comments; comment_driver: 'licensor' | 'factory' | 'retailer' | NULL
 
 status_transitions(task_id, from_status, to_status, user_id, user_name, transitioned_at)
   — status change history (sparse; only captured via webhook going forward)
@@ -87,6 +93,9 @@ time_entries(task_id, user_id, user_name, duration_hrs, start_time)
 overdue_products       — open products past due date (id, name, licensor, retailer, stage_name, days_overdue, priority)
 stalled_products       — active products with no movement in 30+ days (days_since_last_update > 30)
 comment_signals        — products with comment-based process signals
+comment_drivers        — per-product breakdown of comments by driver (licensor_comments, factory_comments, retailer_comments)
+tag_usage              — tag_name, product_count, pct_of_products — what tags are in use
+task_dependency_map    — tasks with blocking dependencies (task_name, depends_on_name, depends_on_status)
 licensor_activity      — per-licensor: product_count, active_product_count, avg_days_in_pipeline
 product_journey        — resolved checkpoints per product in chronological order with dates
 checkpoint_velocity    — avg days from product creation to each checkpoint completion
@@ -118,6 +127,44 @@ const KNOWN_LICENSORS = [
   'Disney', 'Marvel', 'Warner Bros', 'WB', 'Paramount', 'SEGA',
   'Universal', 'Nickelodeon', 'DreamWorks', 'Hasbro', 'Mattel',
 ];
+
+// ---------------------------------------------------------------------------
+// Comment driver classification — who is driving a comment?
+// ---------------------------------------------------------------------------
+
+const LICENSOR_KW = [
+  'per licensor', 'licensor says', 'licensor wants', 'licensor feedback',
+  'licensor requires', 'licensor approved', 'licensor rejected', 'licensor comment',
+  'licensor notes', 'per the licensor', 'ip approved', 'ip rejected', 'ip notes',
+  'brand approved', 'brand rejected', 'brand feedback', 'brand says', 'brand notes',
+  'per disney', 'disney approved', 'disney rejected', 'disney wants', 'disney feedback',
+  'per marvel', 'marvel approved', 'marvel rejected',
+  'per wb', 'per warner', 'warner approved', 'warner rejected',
+  'per peanuts', 'per sega', 'per nickelodeon', 'per wwe',
+  'per strawberry', 'per care bears', 'per sanrio',
+];
+const FACTORY_KW = [
+  'factory says', 'factory confirmed', 'factory feedback', 'factory notes',
+  'factory issue', 'from the factory', 'from factory', 'factory approved',
+  'factory rejected', 'vendor says', 'supplier says', 'vendor feedback',
+  'production issue', 'qc issue', 'quality issue', 'sample quality',
+];
+const RETAILER_KW = [
+  'buyer says', 'buyer wants', 'buyer feedback', 'buyer notes',
+  'per the buyer', 'per buyer', 'buyer approved', 'buyer confirmed',
+  'customer feedback', 'customer wants', 'retailer feedback',
+  'per burlington', 'per ross', 'per walmart', 'per target',
+  'per tjx', 'per tj maxx', 'per five below',
+];
+
+function classifyCommentDriver(text) {
+  if (!text) return null;
+  const lower = text.toLowerCase();
+  if (LICENSOR_KW.some(kw => lower.includes(kw))) return 'licensor';
+  if (FACTORY_KW.some(kw  => lower.includes(kw))) return 'factory';
+  if (RETAILER_KW.some(kw => lower.includes(kw))) return 'retailer';
+  return null;
+}
 
 const GOAL_EVENT_TYPES = new Set([
   'goalCreated', 'goalUpdated', 'goalDeleted',
@@ -432,16 +479,18 @@ async function writeTaskComment(db, { taskId, item, payload, userId, userName })
   const mentionCount    = textContent ? (textContent.match(/@/g) || []).length : 0;
   const attachmentCount = commentParts.filter(p => p?.type === 'attachment').length;
 
-  const filePaths    = extractFilePaths(textContent);
-  const licensorHint = extractLicensorFromPaths(filePaths);
+  const filePaths      = extractFilePaths(textContent);
+  const licensorHint   = extractLicensorFromPaths(filePaths);
+  const commentDriver  = classifyCommentDriver(textContent);
 
   await db.prepare(`
     INSERT OR REPLACE INTO task_comments
       (id, task_id, user_id, user_name, content, mention_count, attachment_count,
-       created_at, file_paths, licensor_hint, source)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'webhook')
+       created_at, file_paths, licensor_hint, comment_driver, source)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'webhook')
   `).bind(commentId, taskId, userId, userName, textContent, mentionCount, attachmentCount,
-          createdAt, filePaths.length ? JSON.stringify(filePaths) : null, licensorHint).run();
+          createdAt, filePaths.length ? JSON.stringify(filePaths) : null,
+          licensorHint, commentDriver).run();
 }
 
 async function writeTaskStub(db, { taskId, listId, workspaceId, spaceId, toValue, userId }) {
