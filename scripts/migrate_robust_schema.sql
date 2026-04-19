@@ -375,7 +375,8 @@ CREATE TABLE IF NOT EXISTS products (
   creator_id                TEXT,
   priority                  TEXT,    -- "urgent" | "high" | "normal" | "low" | NULL
   assignee_count            INTEGER DEFAULT 0,
-  assignee_ids              TEXT,    -- JSON array of user ID strings
+  assignee_ids              TEXT,    -- JSON array of parent-task assignee user IDs
+  subtask_assignee_ids      TEXT,    -- JSON array of unique user IDs across all subtasks
   subtask_count             INTEGER DEFAULT 0,
   subtask_closed_count      INTEGER DEFAULT 0,
   checklist_item_count      INTEGER DEFAULT 0,
@@ -427,6 +428,36 @@ CREATE TABLE IF NOT EXISTS product_checkpoints (
 
 CREATE INDEX IF NOT EXISTS idx_pchk_product ON product_checkpoints(product_id);
 CREATE INDEX IF NOT EXISTS idx_pchk_step    ON product_checkpoints(step_id);
+
+-- checkpoint_map seed data — canonical step definitions used by build_products_table.py
+INSERT OR IGNORE INTO checkpoint_map (step_id, step_order, step_name, step_category) VALUES
+  ('group_concept_approved',     10, 'Group Concept Approved',       'Concept'),
+  ('concept_approved',           12, 'Concept Approved',             'Concept'),
+  ('concept_revision_submitted', 14, 'Concept Revision Submitted',   'Concept'),
+  ('pkg_concept_revision',       16, 'Packaging Concept Revision',   'Concept'),
+  ('packaging_concept_approved', 18, 'Packaging Concept Approved',   'Concept'),
+  ('concept_submitted',          20, 'Concept Submitted',            'Concept'),
+  ('designs_complete',           30, 'Designs Complete',             'Art / Design'),
+  ('art_complete',               32, 'Art Complete',                 'Art / Design'),
+  ('tech_packs_complete',        40, 'Tech Packs Complete',          'Tech Pack'),
+  ('tech_pack_check',            42, 'Tech Pack Check',              'Tech Pack'),
+  ('sampling_request',           50, 'Sampling Request',             'Sampling'),
+  ('sample_requested',           52, 'Sample Requested',             'Sampling'),
+  ('sample_submitted',           54, 'Sample Submitted',             'Sampling'),
+  ('sample_approved',            56, 'Sample Approved',              'Sampling'),
+  ('pps_submitted',              72, 'PPS Submitted',                'Sampling'),
+  ('pps_revision',               74, 'PPS Revision',                 'Sampling'),
+  ('pps_approval',               76, 'PPS Approval',                 'Sampling'),
+  ('factory_qc_china',           80, 'Factory QC China',             'QC / Production'),
+  ('production_approved',        82, 'Production Approved',          'QC / Production'),
+  ('pi_approved',                84, 'PI Approved',                  'QC / Production'),
+  ('contractual_submitted',      88, 'Contractual Submitted',        'Contractual / Compliance'),
+  ('contractual_approved',       89, 'Contractual Approved',         'Contractual / Compliance'),
+  ('brand_assurance',            90, 'Brand Assurance',              'Contractual / Compliance'),
+  ('licensor_approval',          91, 'Licensor Approval',            'Approvals'),
+  ('sarbani_approval',           92, 'Sarbani Approval',             'Approvals'),
+  ('buyer_picks',                94, 'Buyer Picks',                  'Approvals'),
+  ('buyer_presentation',         96, 'Buyer Presentation',           'Approvals');
 
 -- ============================================
 -- PHASE 7: Analysis Views

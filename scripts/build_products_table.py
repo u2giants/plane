@@ -57,7 +57,7 @@ STEP_RULES = [
     # --- Concept ---
     ("group_concept_approved",     ["group concept approved"]),
     ("concept_approved",           ["concept approved", "concept approve"]),
-    ("concept_revision_submitted", ["concept revision submitted"]),
+    ("concept_revision_submitted", ["concept revision submitted", "concept revisions"]),
     ("pkg_concept_revision",       ["packaging concept revision submitted"]),
     ("packaging_concept_approved", ["packaging concept approved", "packaging concept approve"]),
     ("concept_submitted",          ["concept submitted pending", "concept submitted"]),
@@ -65,24 +65,81 @@ STEP_RULES = [
     ("designs_complete",           ["designs complete", "designs"]),
     ("art_complete",               ["art complete"]),
     # --- Tech pack ---
-    ("tech_packs_complete",        ["tech packs"]),
-    ("tech_pack_check",            ["checked with the tech pack", "tech pack check"]),
+    ("tech_packs_complete",        ["tech packs", "tech pack pdf", "upload tech pack"]),
+    ("tech_pack_check",            ["checked with the tech pack", "tech pack check",
+                                    "review tech pack"]),
     # --- Sampling ---
     ("sampling_request",           ["sampling request"]),
     ("sample_requested",           ["sample requested", "sampled requested", "sample request"]),
     ("sample_submitted",           ["sample submitted pending", "sample submitted"]),
     ("sample_approved",            ["sample approved to production", "sample approved"]),
-    ("pps_approval",               ["pps approval", "pre-production sample"]),
+    ("pps_submitted",              ["pre-pro submitted", "pps submitted",
+                                    "pre-pro sample submitted", "pre-pro sample submit"]),
+    ("pps_revision",               ["pre-pro revision", "pre-pro revisions", "pps revision",
+                                    "pre-pro requested"]),
+    ("pps_approval",               ["pps approval", "pre-production sample",
+                                    "pre-pro approved", "pre-pro approval"]),
     # --- QC / Production ---
     ("factory_qc_china",           ["checked in-person in china", "check in-person in china",
                                     "checked in person in china"]),
+    ("production_approved",        ["production approved"]),
     ("pi_approved",                ["product integrity approved"]),
+    # --- Contractual / Compliance ---
+    ("contractual_submitted",      ["contractual submitted"]),
+    ("contractual_approved",       ["contractual approved"]),
+    ("brand_assurance",            ["brand assurance"]),
     # --- Approvals ---
     ("licensor_approval",          ["licensor approval"]),
     ("sarbani_approval",           ["sarbani"]),
     ("buyer_picks",                ["buyer picks"]),
     ("buyer_presentation",         ["presentation for buyer"]),
 ]
+
+# ---------------------------------------------------------------------------
+# Licensor extraction — used when tasks.licensor is NULL.
+# Ordered longest-match first to avoid false positives (e.g. "wb" inside "web").
+# ---------------------------------------------------------------------------
+
+KNOWN_LICENSORS = [
+    # (keyword_lowercase, canonical_name)
+    ("strawberry shortcake", "Strawberry Shortcake"),
+    ("warner brothers",      "Warner Brothers"),
+    ("warner bros",          "Warner Brothers"),
+    ("looney tunes",         "Looney Tunes"),
+    ("nbc universal",        "NBC Universal"),
+    ("nbcuniversal",         "NBC Universal"),
+    ("hello kitty",          "Hello Kitty"),
+    ("care bears",           "Care Bears"),
+    ("sesame street",        "Sesame Street"),
+    ("dc comics",            "DC Comics"),
+    ("star wars",            "Star Wars"),
+    ("pokémon",              "Pokémon"),
+    ("pokemon",              "Pokémon"),
+    ("nickelodeon",          "Nickelodeon"),
+    ("snoopy",               "Peanuts"),
+    ("peanuts",              "Peanuts"),
+    ("disney",               "Disney"),
+    ("marvel",               "Marvel"),
+    ("hasbro",               "Hasbro"),
+    ("mattel",               "Mattel"),
+    ("sanrio",               "Sanrio"),
+    ("batman",               "DC Comics"),
+    ("superman",             "DC Comics"),
+    ("elio",                 "Elio"),
+    ("sega",                 "SEGA"),
+    ("wwe",                  "WWE"),
+]
+
+
+def extract_licensor(text: str) -> Optional[str]:
+    """Return canonical licensor name if any known licensor keyword appears in text."""
+    if not text:
+        return None
+    lower = text.lower()
+    for keyword, canonical in KNOWN_LICENSORS:
+        if keyword in lower:
+            return canonical
+    return None
 
 # Comment keyword signals — simple phrase matching against lowercased comment text
 COMMENT_APPROVAL_KW  = ["approved", "looks good", "lgtm", "go ahead", "confirmed",
@@ -335,7 +392,7 @@ INSERT_PRODUCT = (
     "list_id, list_name, space_id, space_name, "
     "created_at, updated_at, closed_at, due_date, start_date, "
     "days_since_last_update, days_in_pipeline, creator_id, "
-    "priority, assignee_count, assignee_ids, "
+    "priority, assignee_count, assignee_ids, subtask_assignee_ids, "
     "subtask_count, subtask_closed_count, "
     "checklist_item_count, checklist_resolved_count, checklist_completion_pct, "
     "milestone_concept_approved, milestone_sample_approved, milestone_art_complete, "
@@ -346,7 +403,7 @@ INSERT_PRODUCT = (
     "comment_approvals, comment_revisions, comment_rejections, "
     "refreshed_at) "
     "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
-    "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+    "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
 )
 
 INSERT_PCHK = (
@@ -374,10 +431,11 @@ def build_products(
     """Returns (product_rows, checkpoint_rows) ready for bulk insert."""
     now_iso = datetime.now(timezone.utc).isoformat()
 
-    # Build subtask index: counts + most-recent activity per parent
-    subtask_counts: dict   = {}
-    subtask_closed: dict   = {}
-    subtask_last_act: dict = {}
+    # Build subtask index: counts + most-recent activity + assignees per parent
+    subtask_counts:    dict = {}
+    subtask_closed:    dict = {}
+    subtask_last_act:  dict = {}
+    subtask_assignees: dict = {}   # pid -> set of unique user_ids across all subtasks
     for task in tasks.values():
         pid = task.get("parent_task_id")
         if not pid:
@@ -390,6 +448,10 @@ def build_products(
             prev = subtask_last_act.get(pid)
             if prev is None or sub_ua > prev:
                 subtask_last_act[pid] = sub_ua
+        for uid in assignments.get(task["id"], []):
+            if pid not in subtask_assignees:
+                subtask_assignees[pid] = set()
+            subtask_assignees[pid].add(uid)
 
     product_rows    = []
     checkpoint_rows = []
@@ -449,6 +511,13 @@ def build_products(
             if step == "tech_pack_check":
                 mil_tech_pack = 1
 
+        # Licensor — use stored value, else infer from task name → list name
+        licensor = task.get("licensor")
+        if not licensor:
+            list_name_val_for_lic = lists.get(task.get("list_id") or "")
+            licensor = (extract_licensor(task.get("name") or "")
+                        or extract_licensor(list_name_val_for_lic or ""))
+
         # Custom fields
         retailer = get_cf(cf_map, tid, "🧑‍✈ Customer / Retailer", "customer")
         cat      = get_cf(cf_map, tid, "📚 Category")
@@ -459,10 +528,14 @@ def build_products(
         cprog    = get_cf(cf_map, tid, "cust program")
         smpl_req = get_cf(cf_map, tid, "SMPL Req")
 
-        # Assignees
+        # Assignees (parent task)
         assignee_list  = assignments.get(tid, [])
         assignee_count = len(assignee_list)
         assignee_ids   = json.dumps(assignee_list) if assignee_list else None
+
+        # Subtask assignees (unique user IDs across all subtasks)
+        sub_assignee_set    = subtask_assignees.get(tid, set())
+        subtask_assignee_ids = json.dumps(sorted(sub_assignee_set)) if sub_assignee_set else None
 
         # Subtask aggregation
         sub_cnt    = subtask_counts.get(tid, 0)
@@ -502,7 +575,7 @@ def build_products(
         product_rows.append([
             tid,                                              # id
             task.get("name"),                                 # name
-            task.get("licensor"),                             # licensor
+            licensor,                                         # licensor (stored or inferred)
             retailer,                                         # retailer
             cat,                                              # product_category
             put_up,                                           # put_up
@@ -531,6 +604,7 @@ def build_products(
             priority,                                         # priority
             assignee_count,                                   # assignee_count
             assignee_ids,                                     # assignee_ids
+            subtask_assignee_ids,                             # subtask_assignee_ids
             sub_cnt,                                          # subtask_count
             sub_closed,                                       # subtask_closed_count
             n_items,                                          # checklist_item_count
