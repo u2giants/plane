@@ -191,6 +191,14 @@ export default {
       return handleAIQuery(request, env);
     }
 
+    if (url.pathname === '/interview' && request.method === 'GET') {
+      return handleInterviewPage(request, env);
+    }
+
+    if (url.pathname === '/interview/answer' && request.method === 'POST') {
+      return handleInterviewAnswer(request, env);
+    }
+
     return new Response('not found', { status: 404 });
   },
 };
@@ -579,6 +587,115 @@ function extractLicensorFromPaths(paths) {
     }
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Interview page
+// ---------------------------------------------------------------------------
+
+async function handleInterviewPage(request, env) {
+  const pending = await env.DB.prepare(
+    `SELECT id, question, context, topic FROM interview_questions WHERE status = 'pending' ORDER BY id ASC LIMIT 1`
+  ).first();
+
+  const { results: answered } = await env.DB.prepare(
+    `SELECT id, question, answer, topic, answered_at FROM interview_questions WHERE status = 'answered' ORDER BY id ASC`
+  ).all();
+
+  return new Response(buildInterviewHTML(pending, answered || []), {
+    headers: { 'Content-Type': 'text/html; charset=utf-8' },
+  });
+}
+
+async function handleInterviewAnswer(request, env) {
+  let form;
+  try { form = await request.formData(); } catch { return new Response('bad request', { status: 400 }); }
+
+  const questionId = parseInt(form.get('question_id') || '0', 10);
+  const answer = (form.get('answer') || '').trim();
+
+  if (answer && questionId) {
+    await env.DB.prepare(
+      `UPDATE interview_questions SET answer = ?, answered_at = datetime('now'), status = 'answered' WHERE id = ? AND status = 'pending'`
+    ).bind(answer, questionId).run();
+  }
+
+  const base = new URL(request.url);
+  return Response.redirect(`${base.origin}/interview`, 302);
+}
+
+function esc(s) {
+  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function buildInterviewHTML(pending, answered) {
+  const pendingHtml = pending ? `
+    <div class="card">
+      ${pending.topic ? `<div class="badge">${esc(pending.topic.replace(/_/g, ' '))}</div>` : ''}
+      <div class="q-text">${esc(pending.question)}</div>
+      ${pending.context ? `<div class="q-context">${esc(pending.context)}</div>` : ''}
+      <form method="POST" action="/interview/answer">
+        <input type="hidden" name="question_id" value="${pending.id}">
+        <textarea name="answer" placeholder="Type your answer here…" required autofocus></textarea>
+        <button type="submit">Submit Answer</button>
+      </form>
+    </div>` : `
+    <div class="card done-card">
+      <div class="done-icon">&#10003;</div>
+      <div class="done-title">All caught up!</div>
+      <div class="done-sub">No new questions right now — check back soon.</div>
+    </div>`;
+
+  const historyHtml = answered.length > 0 ? `
+    <div class="history">
+      <div class="history-label">${answered.length} answered</div>
+      ${answered.map(q => `
+      <div class="h-item">
+        <div class="h-q">${esc(q.question)}</div>
+        <div class="h-a">${esc(q.answer || '')}</div>
+        ${q.answered_at ? `<div class="h-date">${q.answered_at.slice(0, 10)}</div>` : ''}
+      </div>`).join('')}
+    </div>` : '';
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Business Q&amp;A</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f4f5f7;color:#111;min-height:100vh;padding:36px 16px}
+.wrap{max-width:640px;margin:0 auto}
+.eyebrow{font-size:.8rem;font-weight:600;color:#999;text-transform:uppercase;letter-spacing:.1em;margin-bottom:24px}
+.card{background:#fff;border-radius:16px;padding:30px;box-shadow:0 1px 4px rgba(0,0,0,.07),0 6px 20px rgba(0,0,0,.04);margin-bottom:24px}
+.badge{display:inline-block;background:#eef2ff;color:#4263eb;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;padding:4px 10px;border-radius:20px;margin-bottom:14px}
+.q-text{font-size:1.2rem;font-weight:700;line-height:1.55;margin-bottom:10px}
+.q-context{font-size:.88rem;color:#888;line-height:1.55;margin-bottom:18px;padding:10px 14px;background:#f8f9fa;border-radius:8px}
+textarea{width:100%;border:1.5px solid #dde1e7;border-radius:10px;padding:14px;font-size:.98rem;font-family:inherit;line-height:1.55;resize:vertical;min-height:140px;outline:none;transition:border-color .15s;color:#111}
+textarea:focus{border-color:#4263eb}
+button{background:#4263eb;color:#fff;border:none;border-radius:10px;padding:13px 32px;font-size:.98rem;font-weight:600;cursor:pointer;margin-top:14px;transition:background .15s}
+button:hover{background:#3451d1}
+.done-card{text-align:center;padding:52px 28px}
+.done-icon{font-size:2.8rem;color:#40c057;margin-bottom:12px}
+.done-title{font-size:1.35rem;font-weight:700;margin-bottom:6px}
+.done-sub{color:#999}
+.history{margin-top:12px}
+.history-label{font-size:.8rem;font-weight:600;color:#bbb;text-transform:uppercase;letter-spacing:.08em;margin-bottom:14px}
+.h-item{background:#fff;border-radius:12px;padding:20px;margin-bottom:10px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.h-q{font-size:.9rem;font-weight:600;color:#555;margin-bottom:8px}
+.h-a{font-size:.95rem;line-height:1.65;white-space:pre-wrap;color:#1a1a1a}
+.h-date{font-size:.75rem;color:#ccc;margin-top:8px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="eyebrow">Business Q&amp;A</div>
+  ${pendingHtml}
+  ${historyHtml}
+</div>
+</body>
+</html>`;
 }
 
 // ---------------------------------------------------------------------------
