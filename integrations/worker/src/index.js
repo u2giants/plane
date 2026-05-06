@@ -670,8 +670,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .eyebrow{font-size:.8rem;font-weight:600;color:#999;text-transform:uppercase;letter-spacing:.1em;margin-bottom:24px}
 .card{background:#fff;border-radius:16px;padding:30px;box-shadow:0 1px 4px rgba(0,0,0,.07),0 6px 20px rgba(0,0,0,.04);margin-bottom:24px}
 .badge{display:inline-block;background:#eef2ff;color:#4263eb;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;padding:4px 10px;border-radius:20px;margin-bottom:14px}
-.q-text{font-size:1.2rem;font-weight:700;line-height:1.55;margin-bottom:10px}
-.q-context{font-size:.88rem;color:#888;line-height:1.55;margin-bottom:18px;padding:10px 14px;background:#f8f9fa;border-radius:8px}
+.q-text{font-size:1.2rem;font-weight:700;line-height:1.65;margin-bottom:10px;white-space:pre-wrap}
+.q-context{font-size:.88rem;color:#888;line-height:1.65;margin-bottom:18px;padding:10px 14px;background:#f8f9fa;border-radius:8px;white-space:pre-wrap}
 textarea{width:100%;border:1.5px solid #dde1e7;border-radius:10px;padding:14px;font-size:.98rem;font-family:inherit;line-height:1.55;resize:vertical;min-height:140px;outline:none;transition:border-color .15s;color:#111}
 textarea:focus{border-color:#4263eb}
 button{background:#4263eb;color:#fff;border:none;border-radius:10px;padding:13px 32px;font-size:.98rem;font-weight:600;cursor:pointer;margin-top:14px;transition:background .15s}
