@@ -199,6 +199,10 @@ export default {
       return handleInterviewAnswer(request, env);
     }
 
+    if (url.pathname === '/interview/responses' && request.method === 'GET') {
+      return handleInterviewResponses(request, env);
+    }
+
     return new Response('not found', { status: 404 });
   },
 };
@@ -593,16 +597,33 @@ function extractLicensorFromPaths(paths) {
 // Interview page
 // ---------------------------------------------------------------------------
 
+const RESPONDENTS = {
+  jessica: { name: 'Jessica', color: '#4263eb', light: '#eef2ff' },
+  liz:     { name: 'Liz',     color: '#0ca678', light: '#e6fcf5' },
+};
+
 async function handleInterviewPage(request, env) {
+  const url  = new URL(request.url);
+  const who  = (url.searchParams.get('who') || '').toLowerCase().trim();
+  const info = RESPONDENTS[who];
+
+  if (!info) {
+    return new Response(buildLandingHTML(), { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+  }
+
   const pending = await env.DB.prepare(
-    `SELECT id, question, context, topic FROM interview_questions WHERE status = 'pending' ORDER BY id ASC LIMIT 1`
-  ).first();
+    `SELECT id, question, context, topic FROM interview_questions
+     WHERE status = 'pending' AND respondent = ?
+     ORDER BY id ASC LIMIT 1`
+  ).bind(who).first();
 
   const { results: answered } = await env.DB.prepare(
-    `SELECT id, question, answer, topic, answered_at FROM interview_questions WHERE status = 'answered' ORDER BY id ASC`
-  ).all();
+    `SELECT id, question, answer, topic, answered_at FROM interview_questions
+     WHERE status = 'answered' AND respondent = ?
+     ORDER BY id ASC`
+  ).bind(who).all();
 
-  return new Response(buildInterviewHTML(pending, answered || []), {
+  return new Response(buildInterviewHTML(pending, answered || [], who, info), {
     headers: { 'Content-Type': 'text/html; charset=utf-8' },
   });
 }
@@ -612,23 +633,59 @@ async function handleInterviewAnswer(request, env) {
   try { form = await request.formData(); } catch { return new Response('bad request', { status: 400 }); }
 
   const questionId = parseInt(form.get('question_id') || '0', 10);
-  const answer = (form.get('answer') || '').trim();
+  const answer     = (form.get('answer') || '').trim();
+  const who        = (form.get('who') || '').toLowerCase().trim();
 
   if (answer && questionId) {
     await env.DB.prepare(
-      `UPDATE interview_questions SET answer = ?, answered_at = datetime('now'), status = 'answered' WHERE id = ? AND status = 'pending'`
-    ).bind(answer, questionId).run();
+      `UPDATE interview_questions
+       SET answer = ?, answered_at = datetime('now'), status = 'answered', answered_by = ?
+       WHERE id = ? AND status = 'pending'`
+    ).bind(answer, who, questionId).run();
   }
 
   const base = new URL(request.url);
-  return Response.redirect(`${base.origin}/interview`, 302);
+  return Response.redirect(`${base.origin}/interview?who=${encodeURIComponent(who)}`, 302);
+}
+
+async function handleInterviewResponses(request, env) {
+  const rows = {};
+  for (const who of Object.keys(RESPONDENTS)) {
+    const { results } = await env.DB.prepare(
+      `SELECT question, answer, topic, answered_at FROM interview_questions
+       WHERE respondent = ? ORDER BY id ASC`
+    ).bind(who).all();
+    rows[who] = results || [];
+  }
+  return new Response(buildResponsesHTML(rows), { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
 }
 
 function esc(s) {
   return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-function buildInterviewHTML(pending, answered) {
+const BASE_CSS = `
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f4f5f7;color:#111;min-height:100vh;padding:36px 16px}
+.wrap{max-width:640px;margin:0 auto}
+`;
+
+function buildLandingHTML() {
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Business Q&amp;A</title>
+<style>${BASE_CSS}
+.card{background:#fff;border-radius:16px;padding:40px;box-shadow:0 1px 4px rgba(0,0,0,.07),0 6px 20px rgba(0,0,0,.04);text-align:center}
+h1{font-size:1.4rem;margin-bottom:10px}
+p{color:#777;font-size:.95rem;line-height:1.6}
+</style></head>
+<body><div class="wrap"><div class="card">
+<h1>Business Q&amp;A</h1>
+<p>Use the link you were sent — it includes your name in the URL.<br>If you lost it, ask Albert for your link.</p>
+</div></div></body></html>`;
+}
+
+function buildInterviewHTML(pending, answered, who, info) {
   const pendingHtml = pending ? `
     <div class="card">
       ${pending.topic ? `<div class="badge">${esc(pending.topic.replace(/_/g, ' '))}</div>` : ''}
@@ -636,13 +693,14 @@ function buildInterviewHTML(pending, answered) {
       ${pending.context ? `<div class="q-context">${esc(pending.context)}</div>` : ''}
       <form method="POST" action="/interview/answer">
         <input type="hidden" name="question_id" value="${pending.id}">
+        <input type="hidden" name="who" value="${esc(who)}">
         <textarea name="answer" placeholder="Type your answer here…" required autofocus></textarea>
         <button type="submit">Submit Answer</button>
       </form>
     </div>` : `
     <div class="card done-card">
       <div class="done-icon">&#10003;</div>
-      <div class="done-title">All caught up!</div>
+      <div class="done-title">All done, ${esc(info.name)}!</div>
       <div class="done-sub">No new questions right now — check back soon.</div>
     </div>`;
 
@@ -662,20 +720,19 @@ function buildInterviewHTML(pending, answered) {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Business Q&amp;A</title>
+<title>Q&amp;A — ${esc(info.name)}</title>
 <style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f4f5f7;color:#111;min-height:100vh;padding:36px 16px}
-.wrap{max-width:640px;margin:0 auto}
-.eyebrow{font-size:.8rem;font-weight:600;color:#999;text-transform:uppercase;letter-spacing:.1em;margin-bottom:24px}
+${BASE_CSS}
+.eyebrow{font-size:.8rem;font-weight:600;color:#999;text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px}
+.name-line{font-size:1.5rem;font-weight:800;color:${info.color};margin-bottom:24px}
 .card{background:#fff;border-radius:16px;padding:30px;box-shadow:0 1px 4px rgba(0,0,0,.07),0 6px 20px rgba(0,0,0,.04);margin-bottom:24px}
-.badge{display:inline-block;background:#eef2ff;color:#4263eb;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;padding:4px 10px;border-radius:20px;margin-bottom:14px}
-.q-text{font-size:1.2rem;font-weight:700;line-height:1.65;margin-bottom:10px;white-space:pre-wrap}
+.badge{display:inline-block;background:${info.light};color:${info.color};font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;padding:4px 10px;border-radius:20px;margin-bottom:14px}
+.q-text{font-size:1.15rem;font-weight:700;line-height:1.65;margin-bottom:10px;white-space:pre-wrap}
 .q-context{font-size:.88rem;color:#888;line-height:1.65;margin-bottom:18px;padding:10px 14px;background:#f8f9fa;border-radius:8px;white-space:pre-wrap}
-textarea{width:100%;border:1.5px solid #dde1e7;border-radius:10px;padding:14px;font-size:.98rem;font-family:inherit;line-height:1.55;resize:vertical;min-height:140px;outline:none;transition:border-color .15s;color:#111}
-textarea:focus{border-color:#4263eb}
-button{background:#4263eb;color:#fff;border:none;border-radius:10px;padding:13px 32px;font-size:.98rem;font-weight:600;cursor:pointer;margin-top:14px;transition:background .15s}
-button:hover{background:#3451d1}
+textarea{width:100%;border:1.5px solid #dde1e7;border-radius:10px;padding:14px;font-size:.98rem;font-family:inherit;line-height:1.55;resize:vertical;min-height:160px;outline:none;transition:border-color .15s;color:#111}
+textarea:focus{border-color:${info.color}}
+button{background:${info.color};color:#fff;border:none;border-radius:10px;padding:13px 32px;font-size:.98rem;font-weight:600;cursor:pointer;margin-top:14px;transition:opacity .15s}
+button:hover{opacity:.88}
 .done-card{text-align:center;padding:52px 28px}
 .done-icon{font-size:2.8rem;color:#40c057;margin-bottom:12px}
 .done-title{font-size:1.35rem;font-weight:700;margin-bottom:6px}
@@ -691,11 +748,49 @@ button:hover{background:#3451d1}
 <body>
 <div class="wrap">
   <div class="eyebrow">Business Q&amp;A</div>
+  <div class="name-line">${esc(info.name)}</div>
   ${pendingHtml}
   ${historyHtml}
 </div>
 </body>
 </html>`;
+}
+
+function buildResponsesHTML(rows) {
+  const sections = Object.entries(rows).map(([who, qs]) => {
+    const info = RESPONDENTS[who];
+    const items = qs.map(q => `
+      <div class="r-item">
+        <div class="r-q">${esc(q.question)}</div>
+        ${q.answer
+          ? `<div class="r-a">${esc(q.answer)}</div><div class="r-date">${(q.answered_at || '').slice(0,10)}</div>`
+          : `<div class="r-pending">— not yet answered —</div>`}
+      </div>`).join('');
+    return `<div class="section">
+      <div class="section-name" style="color:${info.color}">${esc(info.name)}</div>
+      ${items || '<div class="r-pending">No questions loaded.</div>'}
+    </div>`;
+  }).join('');
+
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>All Responses</title>
+<style>
+${BASE_CSS}
+.wrap{max-width:800px}
+h1{font-size:1.4rem;font-weight:800;margin-bottom:32px}
+.section{margin-bottom:48px}
+.section-name{font-size:1.2rem;font-weight:800;margin-bottom:16px;padding-bottom:8px;border-bottom:2px solid currentColor}
+.r-item{background:#fff;border-radius:12px;padding:22px;margin-bottom:10px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.r-q{font-size:.95rem;font-weight:700;color:#333;margin-bottom:10px;line-height:1.5}
+.r-a{font-size:.95rem;line-height:1.7;color:#111;white-space:pre-wrap}
+.r-date{font-size:.75rem;color:#bbb;margin-top:8px}
+.r-pending{font-size:.9rem;color:#bbb;font-style:italic}
+</style></head>
+<body><div class="wrap">
+<h1>All Interview Responses</h1>
+${sections}
+</div></body></html>`;
 }
 
 // ---------------------------------------------------------------------------
